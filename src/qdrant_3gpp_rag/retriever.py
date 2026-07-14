@@ -1,0 +1,212 @@
+"""
+Unified retriever for Qdrant-backed RAG.
+
+Two retrieval strategies:
+  - Manual filter mode: caller provides explicit metadata filters.
+  - Self-query mode: an LLM infers the metadata filters from the natural-language
+    query (via structured output), then a dense similarity search runs with those
+    filters applied.
+
+The self-query path is built on langchain_core structured output — the LLM fills
+a small Pydantic model of filter fields — rather than the legacy
+langchain.retrievers.self_query module (removed in LangChain 1.x). No dependency
+on langchain_classic.
+
+Convenience wrappers get_relevant_documents() and get_relevant_chunks() return
+formatted strings ready for prompt injection.
+"""
+
+import logging
+from typing import Any, Callable, Dict, List, Optional, Sequence, Type
+
+from langchain_core.documents import Document
+from langchain_core.language_models import BaseLanguageModel
+from pydantic import BaseModel, Field, create_model
+from qdrant_client.http.models import FieldCondition, Filter, MatchValue
+
+from qdrant_3gpp_rag._types import RetrievalResult
+from qdrant_3gpp_rag.factory import QdrantFactory
+from qdrant_3gpp_rag.self_query import (
+    DEFAULT_DOCUMENT_CONTENT_DESCRIPTION,
+    DEFAULT_METADATA_FIELD_INFO,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _build_filter_model(
+    metadata_field_info: Sequence,
+    document_content_description: str,
+) -> Type[BaseModel]:
+    """Create a Pydantic model the LLM fills to describe the query's filters.
+
+    One optional string field per metadata attribute (from metadata_field_info),
+    each documented with the attribute's description, plus a rewritten `query`
+    for the semantic search. All filter fields are optional — the LLM leaves a
+    field None when the query does not constrain it.
+    """
+    fields: Dict[str, Any] = {
+        "query": (
+            str,
+            Field(description=(
+                "The semantic search string, with any metadata constraints removed. "
+                f"Content indexed: {document_content_description}."
+            )),
+        ),
+    }
+    for info in metadata_field_info:
+        name = getattr(info, "name", None) or info["name"]
+        desc = getattr(info, "description", None) or info.get("description", "")
+        fields[name] = (
+            Optional[str],
+            Field(default=None, description=f"Filter value for '{name}': {desc}. Null if not constrained."),
+        )
+    return create_model("SelfQueryFilters", **fields)
+
+
+def _to_qdrant_filter(filters: Dict[str, Any]) -> Optional[Filter]:
+    """Build a Qdrant Filter from a flat {key: value} dict, ignoring empty values."""
+    conditions = [
+        FieldCondition(key=key, match=MatchValue(value=value))
+        for key, value in filters.items()
+        if value not in (None, "")
+    ]
+    return Filter(must=conditions) if conditions else None
+
+
+def build_self_query_filters(
+    query: str,
+    *,
+    llm: BaseLanguageModel,
+    metadata_field_info: Optional[Sequence] = None,
+    document_content_description: Optional[str] = None,
+) -> tuple[str, Dict[str, Any]]:
+    """Ask the LLM to split a query into a semantic string + metadata filters.
+
+    Returns (search_query, filters) where filters holds only the constrained
+    fields. Modern replacement for SelfQueryRetriever's query constructor.
+    """
+    fields = metadata_field_info or DEFAULT_METADATA_FIELD_INFO
+    content_desc = document_content_description or DEFAULT_DOCUMENT_CONTENT_DESCRIPTION
+    model = _build_filter_model(fields, content_desc)
+
+    parsed = llm.with_structured_output(model).invoke(query)
+    data = parsed.model_dump()
+    search_query = data.pop("query", None) or query
+    filters = {k: v for k, v in data.items() if v not in (None, "")}
+    return search_query, filters
+
+
+def format_document(doc: Document) -> str:
+    """Format a Document as string with metadata header + content."""
+    md = doc.metadata or {}
+    header = (
+        f"release:     {md.get('release', 'unknown')}\n"
+        f"series:      {md.get('series', 'unknown')}\n"
+        f"spec:        {md.get('spec', 'unknown')}\n"
+        f"chunk_index: {md.get('chunk_index', 'unknown')}\n\n"
+    )
+    return header + doc.page_content.strip()
+
+
+def retrieve(
+    query: str,
+    *,
+    factory: QdrantFactory,
+    collection_name: str,
+    llm: Optional[BaseLanguageModel] = None,
+    k: int = 5,
+    filters: Optional[Dict[str, Any]] = None,
+    metadata_field_info: Optional[Sequence] = None,
+    document_content_description: Optional[str] = None,
+    sparse_vector_name: Optional[str] = None,
+) -> RetrievalResult:
+    """Core retrieval function.
+
+    Two modes:
+      - filters provided: manual exact filter + dense similarity search.
+      - no filters (and llm provided): the LLM infers filters from the query
+        (self-query), then the same filtered similarity search runs.
+
+    Args:
+        query: Natural language query.
+        factory: QdrantFactory instance (use get_instance() for the singleton).
+        collection_name: Qdrant collection name.
+        llm: Required only for self-query mode (no manual filters).
+        k: Number of results.
+        filters: Dict of metadata key-value pairs for exact matching.
+        metadata_field_info: Override default metadata schema for self-query.
+        document_content_description: Override default for self-query.
+        sparse_vector_name: Pass None (default) for dense-only collections built
+            by indexer.index_document; pass "text-sparse" for hybrid collections.
+
+    Returns:
+        RetrievalResult with docs, generated_query, and generated_filter.
+
+    Raises:
+        ValueError: If no filters and no llm provided.
+    """
+    logger.info("Starting retrieval | query=%r | k=%d | filters=%s", query, k, filters)
+
+    vector_store = factory.get_vector_store(
+        collection_name, sparse_vector_name=sparse_vector_name
+    )
+
+    if filters:
+        logger.info("Using manual filter mode")
+        search_query = query
+        applied_filters = filters
+        filter_desc = f"Manual filters: {filters}"
+    else:
+        if llm is None:
+            raise ValueError(
+                "Self-query mode requires an LLM instance. "
+                "Either pass filters= for manual mode, or pass llm= for self-query."
+            )
+        logger.info("Using self-query mode (LLM-inferred filters)")
+        search_query, applied_filters = build_self_query_filters(
+            query,
+            llm=llm,
+            metadata_field_info=metadata_field_info,
+            document_content_description=document_content_description,
+        )
+        filter_desc = str(applied_filters) if applied_filters else "No filter applied"
+
+    docs = vector_store.similarity_search(
+        query=search_query, k=k, filter=_to_qdrant_filter(applied_filters)
+    )
+
+    result = RetrievalResult(
+        docs=docs,
+        generated_query=search_query,
+        generated_filter=filter_desc,
+    )
+    logger.info("Retrieval finished -> %d documents found", len(result.docs))
+    logger.debug("Generated query:  %s", result.generated_query)
+    logger.debug("Generated filter: %s", result.generated_filter)
+    return result
+
+
+def get_relevant_documents(
+    query: str,
+    *,
+    factory: QdrantFactory,
+    collection_name: str,
+    llm: Optional[BaseLanguageModel] = None,
+    k: int = 5,
+    filters: Optional[Dict[str, Any]] = None,
+    formatter: Callable[[Document], str] = format_document,
+    sparse_vector_name: Optional[str] = None,
+) -> List[str]:
+    """Retrieve + format as strings ready for prompt injection."""
+    result = retrieve(
+        query, factory=factory, collection_name=collection_name,
+        llm=llm, k=k, filters=filters, sparse_vector_name=sparse_vector_name,
+    )
+    formatted = [formatter(doc) for doc in result.docs]
+    logger.info("get_relevant_documents -> formatted %d strings", len(formatted))
+    return formatted
+
+
+# Alias for rulesbank compatibility
+get_relevant_chunks = get_relevant_documents

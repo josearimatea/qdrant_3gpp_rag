@@ -1,0 +1,26 @@
+[project]
+name = "qdrant-3gpp-rag"
+version = "0.1.0"
+description = "Shared Qdrant/RAG retrieval package for 3GPP projects"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain>=0.3.27",
+    "langchain-community>=0.3.31",
+    "langchain-huggingface>=0.3.1",
+    "langchain-qdrant>=0.2.1",
+    "qdrant-client>=1.15.1",
+    "sentence-transformers>=5.0.0",
+    "torch>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
