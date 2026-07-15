@@ -15,7 +15,7 @@ Usage:
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client.http.models import Distance, VectorParams
@@ -112,6 +112,81 @@ def index_document(
     total = client.count(collection_name).count
     logger.info("Indexing complete — %d vector(s) in '%s'.", total, collection_name)
     return len(chunks)
+
+
+def index_segments(
+    segments: List[Dict[str, Any]],
+    *,
+    factory: QdrantFactory,
+    collection_name: str,
+    text_key: str = "text",
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    embedding_dim: int = DEFAULT_EMBEDDING_DIM,
+    recreate: bool = True,
+) -> int:
+    """Chunk and index a list of segments, each carrying its own metadata.
+
+    Unlike index_document (one metadata for the whole text), this indexes many
+    segments — e.g. one per document section — so each chunk keeps the metadata
+    of the segment it came from (plus chunk_index). This enables metadata-filtered
+    retrieval, such as restricting search to one service or stage.
+
+    Args:
+        segments: list of dicts. Each must hold the chunkable text under
+            ``text_key``; all other keys become that segment's chunk metadata.
+        factory: QdrantFactory instance.
+        collection_name: target collection.
+        text_key: key in each segment holding the text (default "text").
+        chunk_size, chunk_overlap, embedding_dim, recreate: as in index_document.
+
+    Returns:
+        Total number of chunks indexed across all segments.
+
+    Raises:
+        ValueError: If segments is empty or yields no chunk.
+    """
+    if not segments:
+        raise ValueError("Cannot index an empty segment list.")
+
+    all_chunks: List[str] = []
+    all_metadatas: List[Dict[str, Any]] = []
+    for seg in segments:
+        text = (seg.get(text_key) or "").strip()
+        if not text:
+            continue
+        base = {k: v for k, v in seg.items() if k != text_key}
+        chunks = chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        for i, chunk in enumerate(chunks):
+            all_chunks.append(chunk)
+            all_metadatas.append({**base, "chunk_index": i})
+
+    if not all_chunks:
+        raise ValueError("Segments produced no indexable text.")
+
+    logger.info(
+        "Chunked %d segment(s) into %d chunk(s) for '%s'.",
+        len(segments), len(all_chunks), collection_name,
+    )
+
+    client = factory.client
+    if recreate and client.collection_exists(collection_name):
+        client.delete_collection(collection_name)
+    if not client.collection_exists(collection_name):
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config={
+                DEFAULT_VECTOR_NAME: VectorParams(size=embedding_dim, distance=Distance.COSINE)
+            },
+        )
+        logger.info("Created collection '%s' (dim=%d).", collection_name, embedding_dim)
+
+    vector_store = factory.get_vector_store(collection_name, sparse_vector_name=None)
+    vector_store.add_texts(texts=all_chunks, metadatas=all_metadatas)
+
+    total = client.count(collection_name).count
+    logger.info("Indexing complete — %d vector(s) in '%s'.", total, collection_name)
+    return len(all_chunks)
 
 
 def drop_collection(factory: QdrantFactory, collection_name: str) -> bool:

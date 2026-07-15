@@ -33,16 +33,26 @@ class TestRetrieve:
         assert "Manual filters" in result.generated_filter
         mock_vs.similarity_search.assert_called_once()
 
-    def test_self_query_mode_requires_llm(self):
-        """retrieve() without filters and without llm should raise ValueError."""
+    def test_plain_search_without_filters_or_llm(self):
+        """retrieve() with neither filters nor llm does a plain dense search."""
         mock_factory = MagicMock()
+        mock_vs = MagicMock()
+        mock_factory.get_vector_store.return_value = mock_vs
+        mock_vs.similarity_search.return_value = [
+            Document(page_content="plain hit", metadata={})
+        ]
 
-        with pytest.raises(ValueError, match="Self-query mode requires an LLM"):
-            retrieve(
-                "test query",
-                factory=mock_factory,
-                collection_name="test_collection",
-            )
+        result = retrieve(
+            "test query",
+            factory=mock_factory,
+            collection_name="test_collection",
+        )
+
+        assert len(result.docs) == 1
+        assert result.generated_filter == "No filter applied"
+        # No metadata filter passed to the store.
+        _, kwargs = mock_vs.similarity_search.call_args
+        assert kwargs.get("filter") is None
 
     def test_self_query_mode_infers_filters(self):
         """With an LLM and no manual filters, the LLM-inferred filters are applied."""

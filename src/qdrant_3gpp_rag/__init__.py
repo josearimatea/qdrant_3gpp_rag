@@ -16,6 +16,7 @@ from qdrant_3gpp_rag.indexer import (
     chunk_text,
     drop_collection,
     index_document,
+    index_segments,
 )
 from qdrant_3gpp_rag.retriever import (
     build_self_query_filters,
@@ -39,6 +40,7 @@ __all__ = [
     "get_relevant_chunks",
     "get_relevant_documents",
     "index_document",
+    "index_segments",
     "retrieve",
     "DEFAULT_METADATA_FIELD_INFO",
     "DEFAULT_DOCUMENT_CONTENT_DESCRIPTION",

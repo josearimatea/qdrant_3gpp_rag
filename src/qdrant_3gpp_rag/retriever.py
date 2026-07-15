@@ -123,10 +123,12 @@ def retrieve(
 ) -> RetrievalResult:
     """Core retrieval function.
 
-    Two modes:
-      - filters provided: manual exact filter + dense similarity search.
-      - no filters (and llm provided): the LLM infers filters from the query
-        (self-query), then the same filtered similarity search runs.
+    Three modes, chosen by the arguments provided:
+      - filters given: manual exact filter + dense similarity search.
+      - no filters, llm given: the LLM infers filters from the query (self-query),
+        then the same filtered similarity search runs.
+      - no filters, no llm: plain dense similarity search over the whole
+        collection (no metadata filter).
 
     Args:
         query: Natural language query.
@@ -142,9 +144,6 @@ def retrieve(
 
     Returns:
         RetrievalResult with docs, generated_query, and generated_filter.
-
-    Raises:
-        ValueError: If no filters and no llm provided.
     """
     logger.info("Starting retrieval | query=%r | k=%d | filters=%s", query, k, filters)
 
@@ -157,12 +156,7 @@ def retrieve(
         search_query = query
         applied_filters = filters
         filter_desc = f"Manual filters: {filters}"
-    else:
-        if llm is None:
-            raise ValueError(
-                "Self-query mode requires an LLM instance. "
-                "Either pass filters= for manual mode, or pass llm= for self-query."
-            )
+    elif llm is not None:
         logger.info("Using self-query mode (LLM-inferred filters)")
         search_query, applied_filters = build_self_query_filters(
             query,
@@ -171,6 +165,12 @@ def retrieve(
             document_content_description=document_content_description,
         )
         filter_desc = str(applied_filters) if applied_filters else "No filter applied"
+    else:
+        # Plain dense similarity search — no metadata filter, no LLM.
+        logger.info("Using plain vector search (no filters, no LLM)")
+        search_query = query
+        applied_filters = {}
+        filter_desc = "No filter applied"
 
     docs = vector_store.similarity_search(
         query=search_query, k=k, filter=_to_qdrant_filter(applied_filters)
