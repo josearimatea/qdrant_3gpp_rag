@@ -18,6 +18,7 @@ from qdrant_3gpp_rag.index_3gpp_all import (
     load_3gpp_specs,
 )
 from qdrant_3gpp_rag.indexer import (
+    chunk_markdown_by_headers,
     chunk_text,
     drop_collection,
     index_document,
@@ -40,6 +41,7 @@ __all__ = [
     "RetrievalResult",
     "build_3gpp_segments",
     "build_self_query_filters",
+    "chunk_markdown_by_headers",
     "chunk_text",
     "drop_collection",
     "index_3gpp_all",

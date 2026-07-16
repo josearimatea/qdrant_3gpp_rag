@@ -23,17 +23,15 @@ from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup
 from markdown import markdown
-from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 from qdrant_3gpp_rag.factory import QdrantFactory
-from qdrant_3gpp_rag.indexer import index_segments
+from qdrant_3gpp_rag.indexer import chunk_markdown_by_headers, index_segments
 
 logger = logging.getLogger(__name__)
 
 # Chunking parameters — match RAG_3gpp_R18_S28.ipynb.
 GPP_CHUNK_SIZE = 500
 GPP_CHUNK_OVERLAP = 100
-_HEADERS_TO_SPLIT_ON = [("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")]
 _SEPARATORS = ["\n\n", "\n", " ", ""]
 
 
@@ -94,23 +92,19 @@ def build_3gpp_segments(specs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     """Chunk loaded specs into index_segments-ready segments.
 
     Splits each spec by Markdown headers, then by characters (500/100), keeping
-    release/series/spec metadata on every chunk.
+    release/series/spec metadata on every chunk. Uses the shared
+    chunk_markdown_by_headers helper.
     """
-    header_splitter = MarkdownHeaderTextSplitter(
-        headers_to_split_on=_HEADERS_TO_SPLIT_ON, strip_headers=False
-    )
-    char_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=GPP_CHUNK_SIZE,
-        chunk_overlap=GPP_CHUNK_OVERLAP,
-        separators=_SEPARATORS,
-    )
-
     segments: List[Dict[str, Any]] = []
     for doc in specs:
         base = {"release": doc["release"], "series": doc["series"], "spec": doc["spec"]}
-        for header_chunk in header_splitter.split_text(doc["processed_text"]):
-            for chunk in char_splitter.split_text(header_chunk.page_content):
-                segments.append({**base, "text": chunk})
+        for chunk in chunk_markdown_by_headers(
+            doc["processed_text"],
+            chunk_size=GPP_CHUNK_SIZE,
+            chunk_overlap=GPP_CHUNK_OVERLAP,
+            separators=_SEPARATORS,
+        ):
+            segments.append({**base, "text": chunk})
     logger.info("Built %d chunk segment(s) from %d spec(s).", len(segments), len(specs))
     return segments
 

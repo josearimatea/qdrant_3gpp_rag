@@ -4,7 +4,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from qdrant_3gpp_rag.indexer import chunk_text, drop_collection, index_document
+from qdrant_3gpp_rag.indexer import (
+    chunk_markdown_by_headers,
+    chunk_text,
+    drop_collection,
+    index_document,
+)
 
 
 class TestChunkText:
@@ -18,6 +23,29 @@ class TestChunkText:
     def test_short_text_single_chunk(self):
         chunks = chunk_text("a short document", chunk_size=1000, chunk_overlap=200)
         assert chunks == ["a short document"]
+
+
+class TestChunkMarkdownByHeaders:
+
+    def test_splits_on_headers(self):
+        md = "# A\nalpha content\n\n## B\nbeta content\n\n### C\ngamma content"
+        chunks = chunk_markdown_by_headers(md, chunk_size=1000, chunk_overlap=0)
+        # Each section becomes its own chunk (small enough not to be size-split).
+        joined = "\n".join(chunks)
+        assert "alpha content" in joined and "beta content" in joined and "gamma content" in joined
+        # A section's content is not merged across a header boundary into one chunk
+        # with another section's — at least three chunks for three headers.
+        assert len(chunks) >= 3
+
+    def test_large_section_further_split_by_size(self):
+        md = "# Big\n" + ("word " * 500)  # one header, oversized body
+        chunks = chunk_markdown_by_headers(md, chunk_size=200, chunk_overlap=20)
+        assert len(chunks) > 1
+
+    def test_plain_text_without_headers(self):
+        chunks = chunk_markdown_by_headers("no headers here, just text", chunk_size=1000)
+        assert len(chunks) == 1
+        assert "no headers here" in chunks[0]
 
 
 class TestIndexDocument:

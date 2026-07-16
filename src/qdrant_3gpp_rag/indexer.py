@@ -17,7 +17,7 @@ Usage:
 import logging
 from typing import Any, Dict, List, Optional
 
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from qdrant_client.http.models import Distance, VectorParams
 
 from qdrant_3gpp_rag.factory import QdrantFactory, DEFAULT_VECTOR_NAME
@@ -29,6 +29,9 @@ DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
 # all-MiniLM-L6-v2 output dimension.
 DEFAULT_EMBEDDING_DIM = 384
+
+# Markdown headers used to split structured documents before size-based chunking.
+_DEFAULT_HEADERS_TO_SPLIT_ON = [("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")]
 
 
 def chunk_text(
@@ -42,6 +45,36 @@ def chunk_text(
         chunk_overlap=chunk_overlap,
     )
     return splitter.split_text(text)
+
+
+def chunk_markdown_by_headers(
+    text: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    separators: Optional[List[str]] = None,
+) -> List[str]:
+    """Chunk a markdown document by header first, then by size.
+
+    Splits on '#', '##', '###' headers (keeping the heading in each block) so
+    section boundaries are respected, then splits any oversized block by
+    characters. Better than plain size chunking for structured specs — a section
+    like an OpenAPI "Parameter Object" stays whole instead of being cut mid-way.
+
+    Shared by callers that index structured markdown (the 3GPP corpus and the
+    OpenAPI reference), so both use one chunking implementation.
+    """
+    header_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=_DEFAULT_HEADERS_TO_SPLIT_ON, strip_headers=False
+    )
+    char_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        separators=separators or ["\n\n", "\n", " ", ""],
+    )
+    chunks: List[str] = []
+    for header_block in header_splitter.split_text(text):
+        chunks.extend(char_splitter.split_text(header_block.page_content))
+    return chunks
 
 
 def index_document(
