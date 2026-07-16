@@ -7,6 +7,27 @@ from langchain_core.documents import Document
 
 from qdrant_3gpp_rag import retrieve, format_document, get_relevant_documents
 from qdrant_3gpp_rag._types import RetrievalResult
+from qdrant_3gpp_rag.retriever import _to_qdrant_filter
+
+
+class TestToQdrantFilter:
+
+    def test_keys_are_prefixed_with_metadata(self):
+        """langchain_qdrant nests metadata, so filter keys need a 'metadata.' prefix."""
+        qf = _to_qdrant_filter({"mns": "ProvMnS", "stage": "2"})
+        keys = {c.key for c in qf.must}
+        assert keys == {"metadata.mns", "metadata.stage"}
+
+    def test_already_qualified_key_not_double_prefixed(self):
+        qf = _to_qdrant_filter({"metadata.spec": "28532"})
+        assert [c.key for c in qf.must] == ["metadata.spec"]
+
+    def test_empty_values_dropped(self):
+        qf = _to_qdrant_filter({"mns": "ProvMnS", "stage": None, "series": ""})
+        assert [c.key for c in qf.must] == ["metadata.mns"]
+
+    def test_all_empty_returns_none(self):
+        assert _to_qdrant_filter({"a": None, "b": ""}) is None
 
 
 class TestRetrieve:

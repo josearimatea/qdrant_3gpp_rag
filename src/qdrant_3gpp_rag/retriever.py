@@ -64,10 +64,23 @@ def _build_filter_model(
     return create_model("SelfQueryFilters", **fields)
 
 
+# langchain_qdrant nests document metadata under a "metadata" payload key, so a
+# field indexed as {"mns": ...} lives at "metadata.mns" in Qdrant. Filter keys are
+# prefixed accordingly (unless the caller already qualified them).
+_METADATA_PAYLOAD_KEY = "metadata"
+
+
 def _to_qdrant_filter(filters: Dict[str, Any]) -> Optional[Filter]:
-    """Build a Qdrant Filter from a flat {key: value} dict, ignoring empty values."""
+    """Build a Qdrant Filter from a flat {key: value} dict, ignoring empty values.
+
+    Keys are resolved against the nested metadata payload (e.g. "mns" ->
+    "metadata.mns"), matching how langchain_qdrant stores document metadata.
+    """
+    def _payload_key(key: str) -> str:
+        return key if key.startswith(_METADATA_PAYLOAD_KEY + ".") else f"{_METADATA_PAYLOAD_KEY}.{key}"
+
     conditions = [
-        FieldCondition(key=key, match=MatchValue(value=value))
+        FieldCondition(key=_payload_key(key), match=MatchValue(value=value))
         for key, value in filters.items()
         if value not in (None, "")
     ]
