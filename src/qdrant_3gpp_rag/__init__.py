@@ -12,6 +12,11 @@ Quick start:
 
 from qdrant_3gpp_rag._types import RetrievalResult
 from qdrant_3gpp_rag.factory import QdrantFactory
+from qdrant_3gpp_rag.index_3gpp_all import (
+    build_3gpp_segments,
+    index_3gpp_all,
+    load_3gpp_specs,
+)
 from qdrant_3gpp_rag.indexer import (
     chunk_text,
     drop_collection,
@@ -33,9 +38,12 @@ from qdrant_3gpp_rag.self_query import (
 __all__ = [
     "QdrantFactory",
     "RetrievalResult",
+    "build_3gpp_segments",
     "build_self_query_filters",
     "chunk_text",
     "drop_collection",
+    "index_3gpp_all",
+    "load_3gpp_specs",
     "format_document",
     "get_relevant_chunks",
     "get_relevant_documents",
