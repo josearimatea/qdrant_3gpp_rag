@@ -16,6 +16,8 @@ release) is meant to run once from the CLI (scripts/index_3gpp_all.py); consumer
 only query the resulting collection.
 """
 
+import gzip
+import json
 import logging
 import os
 import re
@@ -109,14 +111,46 @@ def build_3gpp_segments(specs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     return segments
 
 
+def _chunk_cache_path(collection_name: str, output_dir: str) -> str:
+    safe_name = collection_name.replace('/', '_').replace(' ', '_')
+    return os.path.join(output_dir, f"{safe_name}.chunks.jsonl.gz")
+
+
+def _ensure_output_dir(output_dir: str) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+
+
+def _save_segments_cache(path: str, segments: List[Dict[str, Any]]) -> None:
+    _ensure_output_dir(os.path.dirname(path))
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        for segment in segments:
+            json.dump(segment, f, ensure_ascii=False)
+            f.write("\n")
+
+
+def _load_segments_cache(path: str) -> List[Dict[str, Any]]:
+    segments: List[Dict[str, Any]] = []
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            segments.append(json.loads(line))
+    return segments
+
+
 def index_3gpp_all(
     directory: str,
     collection_name: str,
     *,
     factory: Optional[QdrantFactory] = None,
     device: str = "cpu",
+    qdrant_host: str = "localhost",
+    qdrant_port: int = 6333,
     releases: Optional[List[str]] = None,
     series: Optional[List[str]] = None,
+    output_dir: str = "output",
+    force_chunk_rebuild: bool = False,
     recreate: bool = True,
 ) -> int:
     """Load, chunk, and index all 3GPP specs under a directory into Qdrant.
@@ -128,17 +162,34 @@ def index_3gpp_all(
         collection_name: target Qdrant collection (persistent).
         factory: optional QdrantFactory; created from `device` if omitted.
         device: embedding device when building the factory ("cpu" / "cuda").
+        qdrant_host: Qdrant host.
+        qdrant_port: Qdrant port.
         releases / series: optional folder whitelists (e.g. ["Rel-18"]).
+        output_dir: directory where chunk cache is stored.
+        force_chunk_rebuild: ignore existing cache and rebuild chunks.
         recreate: drop and rebuild the collection if it already exists.
 
     Returns:
         Number of chunks indexed.
     """
-    factory = factory or QdrantFactory.get_instance(device=device)
-    specs = load_3gpp_specs(directory, releases=releases, series=series)
-    if not specs:
-        raise ValueError(f"No .md specs found under '{directory}' for the given filters.")
-    segments = build_3gpp_segments(specs)
+    factory = factory or QdrantFactory.get_instance(
+        host=qdrant_host,
+        port=qdrant_port,
+        device=device,
+    )
+
+    cache_path = _chunk_cache_path(collection_name, output_dir)
+    if os.path.exists(cache_path) and not force_chunk_rebuild:
+        segments = _load_segments_cache(cache_path)
+        logger.info("Loaded %d chunk segment(s) from cache '%s'.", len(segments), cache_path)
+    else:
+        specs = load_3gpp_specs(directory, releases=releases, series=series)
+        if not specs:
+            raise ValueError(f"No .md specs found under '{directory}' for the given filters.")
+        segments = build_3gpp_segments(specs)
+        _save_segments_cache(cache_path, segments)
+        logger.info("Saved %d chunk segment(s) to cache '%s'.", len(segments), cache_path)
+
     return index_segments(
         segments,
         factory=factory,
