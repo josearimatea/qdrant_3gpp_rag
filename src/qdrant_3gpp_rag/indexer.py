@@ -15,6 +15,7 @@ Usage:
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
@@ -32,6 +33,29 @@ DEFAULT_EMBEDDING_DIM = 384
 
 # Markdown headers used to split structured documents before size-based chunking.
 _DEFAULT_HEADERS_TO_SPLIT_ON = [("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")]
+
+# A named type definition inside an embedded OpenAPI/YAML block: a PascalCase name
+# alone on a line ending in ':' (e.g. "NotificationHeader:", "ErrorResponse:").
+# 3GPP specs append their schemas as YAML where each type starts this way and its
+# properties follow until the next such line. When several types sit under one
+# markdown header they must be split here so one type stays one chunk — a size
+# split would interleave a type's fields with its neighbours'.
+_YAML_TYPE_DEF_RE = re.compile(r'^[A-Z][A-Za-z0-9]+:\s*$', re.MULTILINE)
+
+
+def _split_yaml_type_defs(block: str) -> Optional[List[str]]:
+    """Split a block at YAML type-definition boundaries, one chunk per type.
+
+    Returns the per-type chunks when the block holds two or more type definitions
+    (so splitting is meaningful), else None so the caller falls back to its normal
+    size-based chunking. Any preamble before the first type name is kept with it.
+    """
+    starts = [m.start() for m in _YAML_TYPE_DEF_RE.finditer(block)]
+    if len(starts) < 2:
+        return None
+    bounds = [0] + starts[1:] + [len(block)]
+    parts = [block[bounds[i]:bounds[i + 1]].strip() for i in range(len(bounds) - 1)]
+    return [p for p in parts if p]
 
 
 def chunk_text(
@@ -73,7 +97,16 @@ def chunk_markdown_by_headers(
     )
     chunks: List[str] = []
     for header_block in header_splitter.split_text(text):
-        chunks.extend(char_splitter.split_text(header_block.page_content))
+        content = header_block.page_content
+        # If the block embeds several YAML type definitions, split per type first so
+        # each stays whole; otherwise chunk the block by size as before. Either way,
+        # a still-oversized piece is passed through the size splitter as a fallback.
+        units = _split_yaml_type_defs(content) or [content]
+        for unit in units:
+            if len(unit) <= chunk_size:
+                chunks.append(unit)
+            else:
+                chunks.extend(char_splitter.split_text(unit))
     return chunks
 
 

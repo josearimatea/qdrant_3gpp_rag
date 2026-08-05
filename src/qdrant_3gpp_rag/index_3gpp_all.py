@@ -31,9 +31,14 @@ from qdrant_3gpp_rag.indexer import chunk_markdown_by_headers, index_segments
 
 logger = logging.getLogger(__name__)
 
-# Chunking parameters — match RAG_3gpp_R18_S28.ipynb.
-GPP_CHUNK_SIZE = 500
-GPP_CHUNK_OVERLAP = 100
+# Chunking parameters. The size is the UPPER BOUND for a chunk; type definitions
+# are split per type first (see chunk_markdown_by_headers), so a type stays whole
+# and this only caps the occasional oversized one. 500 was too small — it cut
+# embedded YAML type definitions apart and interleaved neighbouring types, so a
+# type's field set could not be retrieved as a unit. 2000 keeps a type's block
+# together.
+GPP_CHUNK_SIZE = 2000
+GPP_CHUNK_OVERLAP = 200
 _SEPARATORS = ["\n\n", "\n", " ", ""]
 
 

@@ -17,3 +17,6 @@ venv/
 
 # uv
 # (uv.lock is intentionally versioned)
+
+# Chunk cache produced by index_3gpp_all.py
+output/
