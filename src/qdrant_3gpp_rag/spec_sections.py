@@ -25,7 +25,15 @@ lost the title that said what it was about. Here the unit is the clause:
     being generated or judged. The cover page (the text before the first heading)
     is left out too;
   - each chunk carries its clause, title and parent path, so a consumer can filter
-    or group by clause.
+    or group by clause, plus:
+      clause_ancestors — the clause and all its prefixes ("12", "12.3", ...), so an
+                         exact match on "12.3" selects the clause and its subtree;
+      defines          — what the section defines, read from a 3GPP-style title
+                         ("Type NotifyThresholdCrossing", "Enumeration: DataInd",
+                         'Resource "/notificationSink"'), the clean name only;
+      mentions         — the names defined elsewhere in the SAME spec that the
+                         section cites (a light graph: fetch the definition of each
+                         type a section uses with a filter defines = X).
 
 The markdown is kept as markdown (no HTML round trip, which dropped the heading
 markers) and tables stay where they are.
@@ -35,7 +43,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -45,7 +53,9 @@ SECTION_MAX_CHARS = 4000
 SECTION_OVERLAP = 200
 # How many parent titles a chunk starts with.
 PARENTS_IN_TEXT = 2
-CHUNKING = "sections-v1"           # recorded on every chunk: how it was cut
+CHUNKING = "sections-v2"           # recorded on every chunk: how it was cut
+# Upper bound of a chunk's `mentions` list (first occurrences kept).
+MAX_MENTIONS = 30
 
 _ATX = re.compile(r"^(#{1,9})[ \t]+(?P<title>[^\n]*?)[ \t#]*$", re.MULTILINE)
 _SETEXT = re.compile(r"^(?P<title>[^\n|+]*\S[^\n|+]*)\n(?P<rule>=+|-{3,})[ \t]*$", re.MULTILINE)
@@ -54,6 +64,20 @@ _CLAUSE = re.compile(
     r"^(?:Annex\s+)?(?P<clause>\d+[a-z]?(?:\.\d+[a-z]?)*|[A-Z](?:\.\d+[a-z]?)+|[A-Z]\b)")
 _ANNEX = re.compile(r"^Annex\s+[A-Z]\b", re.IGNORECASE)
 _YAML_TYPE_DEF = re.compile(r"^[A-Z][A-Za-z0-9]+:\s*$", re.MULTILINE)
+# A defining title: clause, kind, optional colon, then the name. Two styles are seen:
+# "Type NotifyThresholdCrossing", 'Resource \"/notificationSink\"' (TS 28.xxx) and
+# "Type: ReplaceHttpUrl", "Resource: Individual Subscription (Document)" (TS 29.xxx).
+_DEFINING_TITLE = re.compile(
+    r"^(?:\d+[a-z]?(?:\.\d+[a-z]?)*|[A-Z](?:\.\d+[a-z]?)+)\s+"
+    r"(?:Type|Enumeration|Notification|Operation|Resource)(?P<colon>\s*:)?\s+(?P<rest>.+)$")
+_QUOTED = re.compile(r'^"(?P<name>[^"]+)"')
+_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_TRAILING_PARENS = re.compile(r"\s*\([^)]*\)\s*$")
+# The shape of a code identifier: a lower-case letter followed by a capital
+# ("notifyEvent", "createMOI", "NfGroupIds"), or a digit / "_" / "-" / "/". A bare
+# word after a kind ("Resource allocation", "Operation Points", "Notification PUSH")
+# is prose, not a name; only the colon and quoted styles may name one in words.
+_CODE_SHAPE = re.compile(r"[a-z][A-Z]|[/_\-\d]")
 
 
 @dataclass
@@ -71,6 +95,60 @@ def clause_of(title: str) -> str:
     """The clause number a heading starts with, '' if none ('Foreword')."""
     m = _CLAUSE.match(title.strip().strip("*").strip())
     return m.group("clause") if m else ""
+
+
+def clause_ancestors(clause: str) -> List[str]:
+    """The clause and all its prefixes, outermost first: '12.3.1' -> ['12', '12.3',
+    '12.3.1']; [] for no clause."""
+    parts = clause.split(".") if clause else []
+    return [".".join(parts[:i]) for i in range(1, len(parts) + 1)]
+
+
+def defines_of(title: str) -> List[str]:
+    """What a 3GPP-style title defines, as a clean name: 'Type: ReplaceHttpUrl' ->
+    ['ReplaceHttpUrl'], 'Resource \\"/notificationSink\\"' -> ['/notificationSink'];
+    [] for a title that defines nothing ('Resource structure')."""
+    m = _DEFINING_TITLE.match(title.replace('\\"', '"').strip())
+    if not m:
+        return []
+    rest = m.group("rest").strip()
+    quoted = _QUOTED.match(rest)
+    if quoted:
+        name = quoted.group("name").strip().strip("\\").strip()
+        return [name] if name else []
+    rest = _TRAILING_PARENS.sub("", rest).strip()     # "relocate (POST)", "X (Document)"
+    if not rest:
+        return []
+    if m.group("colon"):                               # "Resource: Individual Subscription"
+        return [rest] if re.match(r"[A-Za-z0-9/.]", rest) else []
+    return [rest] if _IDENTIFIER.match(rest) and _CODE_SHAPE.search(rest) else []
+
+
+def _mention_pattern(names: Set[str]) -> Optional[re.Pattern]:
+    """One regex finding any code-shaped name, longest first, as a whole word. Names
+    that are ordinary words ("delete", "Individual subscription") are not searched:
+    they would make every section a hit."""
+    usable = sorted((n for n in names if _CODE_SHAPE.search(n)), key=lambda n: (-len(n), n))
+    if not usable:
+        return None
+    alts = "|".join(re.escape(n) for n in usable)
+    return re.compile(rf"(?<![A-Za-z0-9_])(?:{alts})(?![A-Za-z0-9_])")
+
+
+def mentions_in(text: str, pattern: Optional[re.Pattern], own: List[str],
+                limit: int = MAX_MENTIONS) -> List[str]:
+    """The spec's defined names cited in `text`, in order of first occurrence, without
+    the section's own and at most `limit`."""
+    if pattern is None:
+        return []
+    found: List[str] = []
+    for m in pattern.finditer(text.replace('\\"', '"')):
+        name = m.group(0)
+        if name not in own and name not in found:
+            found.append(name)
+            if len(found) >= limit:
+                break
+    return found
 
 
 def _headings(text: str) -> List[tuple]:
@@ -150,10 +228,11 @@ def chunk_spec_sections(
 ) -> List[Dict[str, Any]]:
     """Segments ready for index_segments(..., chunk_size=None): one per section (or
     per part of a long one), text under "text", plus the given metadata and
-    clause / title / path / annex / part / parts / chunking. Annexes and the cover
-    page are left out unless include_annexes=True."""
+    clause / clause_ancestors / title / path / defines / mentions / annex / part /
+    parts / chunking. Annexes and the cover page are left out unless
+    include_annexes=True."""
     base = dict(metadata or {})
-    segments: List[Dict[str, Any]] = []
+    kept: List[tuple] = []                       # (section, its own names, [(text, body)])
     for sec in split_sections(text):
         if not sec.body or sec.title.lower() == "contents":
             continue                    # a parent heading only, or the contents listing
@@ -162,16 +241,26 @@ def chunk_spec_sections(
         prefix = _prefix(sec)
         whole = f"{prefix}{sec.heading}\n\n{sec.body}".strip() if sec.heading else sec.body
         if len(whole) <= max_chars:
-            parts = [whole]
+            parts = [(whole, sec.body)]
         else:
             room = max_chars - len(prefix) - len(sec.heading) - 20
             bodies = _pieces(sec.body, room, overlap)
             n = len(bodies)
-            parts = [f"{prefix}{sec.heading} (part {i}/{n})\n\n{b}".strip() if sec.heading
-                     else b for i, b in enumerate(bodies, 1)]
-        for i, part in enumerate(parts, 1):
-            segments.append({**base, "text": part, "clause": sec.clause, "title": sec.title,
+            parts = [(f"{prefix}{sec.heading} (part {i}/{n})\n\n{b}".strip() if sec.heading
+                      else b, b) for i, b in enumerate(bodies, 1)]
+        kept.append((sec, defines_of(sec.title), parts))
+
+    # Mentions need the whole spec's definitions first; only the body is searched (the
+    # parents' titles in the prefix are context, not citations).
+    pattern = _mention_pattern({name for _, own, _ in kept for name in own})
+    segments: List[Dict[str, Any]] = []
+    for sec, own, parts in kept:
+        for i, (part, body) in enumerate(parts, 1):
+            segments.append({**base, "text": part, "clause": sec.clause,
+                             "clause_ancestors": clause_ancestors(sec.clause),
+                             "title": sec.title,
                              "path": " › ".join([*sec.parents, sec.title]),
+                             "defines": list(own), "mentions": mentions_in(body, pattern, own),
                              "annex": sec.annex, "part": i, "parts": len(parts),
                              "chunking": CHUNKING})
     return segments

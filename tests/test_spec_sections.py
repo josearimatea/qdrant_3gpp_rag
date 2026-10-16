@@ -4,7 +4,14 @@ import os
 
 import pytest
 
-from qdrant_3gpp_rag.spec_sections import chunk_spec_sections, clause_of, split_sections
+from qdrant_3gpp_rag.spec_sections import (
+    _CODE_SHAPE,
+    chunk_spec_sections,
+    clause_ancestors,
+    clause_of,
+    defines_of,
+    split_sections,
+)
 
 SPEC = """\
 Cover page text.
@@ -107,6 +114,76 @@ def test_clause_of(title, clause):
     assert clause_of(title) == clause
 
 
+def test_clause_ancestors_with_a_letter_suffix():
+    assert clause_ancestors("12.1.1.4.1a.7") == [
+        "12", "12.1", "12.1.1", "12.1.1.4", "12.1.1.4.1a", "12.1.1.4.1a.7"]
+    assert clause_ancestors("") == []
+
+
+@pytest.mark.parametrize("title, name", [
+    ("12.3.1.2.4.2.1 Type NotifyThresholdCrossing", "NotifyThresholdCrossing"),
+    ("5.2.4.4 Type: ReplaceHttpUrl", "ReplaceHttpUrl"),
+    ("12.3.1.2.4.3.3 Enumeration PerfNotificationTypes", "PerfNotificationTypes"),
+    ("5.2.3.1 Enumeration: PatchOperation", "PatchOperation"),
+    ("11.3.1.3 Notification notifyThresholdCrossing", "notifyThresholdCrossing"),
+    ('12.5.1.1.2 Operation \\"establishStreamingConnection\\"', "establishStreamingConnection"),
+    ('12.3.1.2.3.2.1 Resource \\"/notificationSink\\"', "/notificationSink"),
+    ("6.1.3.3 Resource: Individual SM Context (Document)", "Individual SM Context"),
+    ("8.5.2.3.4.3 Operation: relocate (POST)", "relocate"),
+    ("12.2.1.2.2 Notification notifyNewAlarm (non-security alarm)", "notifyNewAlarm"),
+])
+def test_defines_reads_the_name_from_a_3gpp_title(title, name):
+    assert defines_of(title) == [name]
+
+
+@pytest.mark.parametrize("title", [
+    "12.1.1.3.1 Resource structure",
+    "6.1.3.2.3 Resource Standard Methods",
+    "4.4.2 Resource allocation",
+    "17 Notification Management",
+    "4.2.4.3 Notification PUSH",
+    "6 Operation Points",
+    "5.10.6.2 Operation modes",
+    "12.3.1.2.3.2.1.3.1 POST",
+    "Foreword",
+])
+def test_a_title_that_defines_nothing(title):
+    assert defines_of(title) == []
+
+
+MENTIONS_SPEC = """\
+# 5 Types
+
+## 5.1 Type NotifyThresholdCrossing
+
+| Attribute | Data type |
+| thresholdInfo | ThresholdInfo |
+| direction | PerfMetricDirection |
+
+## 5.2 Type ThresholdInfo
+
+Holds a threshold. Not to be confused with NotifyThresholdCrossing.
+
+## 5.3 Enumeration: PerfMetricDirection
+
+Values: INCREASING, DECREASING. Used together with ExternalType from TS 29.571.
+
+## 5.4 Type Scope
+
+Scope of a request.
+"""
+
+
+def test_mentions_are_the_names_defined_in_the_same_spec():
+    by = _by_clause(chunk_spec_sections(MENTIONS_SPEC))
+    assert by["5.1"]["defines"] == ["NotifyThresholdCrossing"]
+    assert by["5.1"]["mentions"] == ["ThresholdInfo", "PerfMetricDirection"]
+    assert by["5.2"]["mentions"] == ["NotifyThresholdCrossing"]
+    assert by["5.3"]["mentions"] == []          # ExternalType is not defined here
+    assert by["5.4"]["defines"] == []           # a bare ordinary word is not a name
+    assert by["5.1"]["clause_ancestors"] == ["5", "5.1"]
+
+
 DATASET = os.path.join(os.path.dirname(__file__), "..", "..", "..", "Dataset", "TSpec-LLM",
                        "3GPP-clean", "Rel-18", "28_series", "28532-i00.md")
 
@@ -125,3 +202,29 @@ def test_the_real_spec_keeps_its_tables_with_their_clause():
     assert not any(s["annex"] for s in segs)                            # no annex at all
     assert not any("openapi:" in s["text"] for s in segs)
     assert len(split_sections(text)) > 600
+    assert by["12.3.1.2.4.2.1"]["defines"] == ["NotifyThresholdCrossing"]
+    assert "NotifyThresholdCrossing" in by["12.3.1.2.3.2.1.3.1"]["mentions"]  # POST -> its body type
+    assert "12.3" in by["12.3.1.2.3.2.1.3.1"]["clause_ancestors"]
+
+
+CORPUS = os.path.join(os.path.dirname(__file__), "..", "..", "..", "Dataset", "TSpec-LLM",
+                      "3GPP-clean")
+
+
+@pytest.mark.skipif(not os.path.isdir(CORPUS), reason="TSpec-LLM dataset not present")
+def test_every_bare_define_in_the_corpus_has_the_shape_of_a_code_name():
+    """The rule must hold for any release, without a per-spec list: a name written
+    after a kind with no colon nor quotes ("Type X") is taken only if it looks like
+    code. Run over the OpenAPI-bearing series (28, 29) of every release present."""
+    from qdrant_3gpp_rag.index_3gpp_all import load_3gpp_specs
+
+    bad, total = [], 0
+    for doc in load_3gpp_specs(CORPUS, series=["28_series", "29_series"]):
+        for sec in split_sections(doc["processed_text"]):
+            title = sec.title.replace('\\"', '"')
+            for name in defines_of(sec.title):
+                total += 1
+                bare = '"' not in title and ":" not in title.split(name)[0]
+                if bare and (" " in name or not _CODE_SHAPE.search(name)):
+                    bad.append((doc["spec"], sec.title))
+    assert total > 1000 and not bad, bad[:20]

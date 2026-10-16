@@ -19,7 +19,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
-from qdrant_client.http.models import Distance, VectorParams
+from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams
 
 from qdrant_3gpp_rag.factory import QdrantFactory, DEFAULT_VECTOR_NAME
 
@@ -30,6 +30,12 @@ DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
 # all-MiniLM-L6-v2 output dimension.
 DEFAULT_EMBEDDING_DIM = 384
+
+# Metadata fields given a keyword payload index on collection creation, so exact
+# filters on them (retriever._to_qdrant_filter) stay fast on a large collection.
+# langchain_qdrant stores metadata under the "metadata" payload key. A list field
+# (clause_ancestors, defines, mentions) matches when any element equals the value.
+KEYWORD_INDEXED_FIELDS = ("spec", "clause", "clause_ancestors", "defines", "mentions")
 
 # Markdown headers used to split structured documents before size-based chunking.
 _DEFAULT_HEADERS_TO_SPLIT_ON = [("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")]
@@ -248,6 +254,9 @@ def index_segments(
                 DEFAULT_VECTOR_NAME: VectorParams(size=embedding_dim, distance=Distance.COSINE)
             },
         )
+        for name in KEYWORD_INDEXED_FIELDS:
+            client.create_payload_index(collection_name, field_name=f"metadata.{name}",
+                                        field_schema=PayloadSchemaType.KEYWORD)
         logger.info("Created collection '%s' (dim=%d).", collection_name, embedding_dim)
 
     vector_store = factory.get_vector_store(collection_name, sparse_vector_name=None)

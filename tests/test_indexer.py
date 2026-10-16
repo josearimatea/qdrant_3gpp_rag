@@ -9,6 +9,7 @@ from qdrant_3gpp_rag.indexer import (
     chunk_text,
     drop_collection,
     index_document,
+    index_segments,
 )
 
 
@@ -103,6 +104,28 @@ class TestIndexDocument:
         index_document("content", factory=factory, collection_name="c", recreate=True)
 
         factory.client.delete_collection.assert_called_once_with("c")
+
+
+class TestIndexSegments:
+
+    def test_new_collection_gets_keyword_indexes_on_the_metadata(self):
+        factory = MagicMock()
+        factory.client.collection_exists.return_value = False
+        factory.client.count.return_value = MagicMock(count=1)
+        vs = MagicMock()
+        factory.get_vector_store.return_value = vs
+
+        index_segments(
+            [{"text": "a section", "spec": "28532-i00", "clause": "12.3",
+              "clause_ancestors": ["12", "12.3"], "defines": [], "mentions": []}],
+            factory=factory, collection_name="c", chunk_size=None,
+        )
+
+        indexed = {c.kwargs["field_name"] for c in factory.client.create_payload_index.call_args_list}
+        assert indexed == {"metadata.spec", "metadata.clause", "metadata.clause_ancestors",
+                           "metadata.defines", "metadata.mentions"}
+        _, kwargs = vs.add_texts.call_args
+        assert kwargs["metadatas"][0]["clause_ancestors"] == ["12", "12.3"]
 
 
 class TestDropCollection:

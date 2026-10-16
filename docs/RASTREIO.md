@@ -66,3 +66,42 @@ Ficaram: `3gpp_rel18_28_28532`, `3gpp_rel18_28`, `3gpp_rel18_all`, `openapi_refe
 **Decidido deixar como está:** cláusulas "Void"; documentos OpenAPI fora de anexo
 (TS 28.312, cláusula 7.2.3, 51 partes). A série 38 vem do dataset dividida em vários
 arquivos por spec (`38101-1-i30_s00-05.md` …), cada um com o seu `spec` no metadado.
+
+---
+
+## 15/out/2026 — metadado por seção: `clause_ancestors`, `defines`, `mentions` (plano 2.1)
+
+**O que mudou.** Cada pedaço (`chunking="sections-v2"`) ganhou três campos, todos
+calculados por regra, sem lista por spec — valem para qualquer release:
+
+- `clause_ancestors`: a cláusula e todos os prefixos (`12.1.1.4.1a.7` → `12`, `12.1`,
+  …, `12.1.1.4.1a`, `12.1.1.4.1a.7`). Filtro exato em `12.3` = a cláusula e tudo abaixo.
+- `defines`: o nome definido, lido do título no padrão 3GPP. Três formas: com
+  dois-pontos (`Type: ReplaceHttpUrl`, `Resource: Individual SM Context (Document)` →
+  sem o parêntese final), entre aspas (`Resource \"/notificationSink\"` →
+  `/notificationSink`) e sem nada (`Type NotifyThresholdCrossing`) — nesta última, só
+  vale nome com **forma de código** (minúscula seguida de maiúscula, ou dígito, `_`,
+  `-`, `/`). Assim "Resource allocation", "Operation Points", "Notification PUSH"
+  não viram definição. Custo aceito: `Type Scope`, `Operation subscribe` (palavras
+  comuns, repetidas em várias cláusulas) ficam sem `defines`.
+- `mentions`: os nomes definidos na mesma spec que o corpo da seção cita (não o
+  prefixo com os títulos-pai), na ordem em que aparecem, sem os da própria seção, no
+  máximo 30. Só nomes com forma de código são procurados no texto.
+
+Índices de payload (keyword) em `metadata.spec`, `clause`, `clause_ancestors`,
+`defines`, `mentions`, criados com a coleção (`index_segments`). Self-query: campos
+`clause`, `clause_ancestors`, `defines` com descrição.
+
+**Medido.** Rel-18 inteiro (920 specs, sem anexos): a primeira versão da regra dava
+4.185 `defines`, com ~60–70 falsos (palavra comum depois de Notification/Operation/
+Resource, quase todos fora das séries 28/29); com a regra da forma de código, 4.087
+(3.352 com dois-pontos, 706 sem nada, 29 entre aspas), nenhum sem forma de código.
+TS 28.532: 605 pedaços (igual), 154 com `defines`, 145 com `mentions`, 1 no limite de
+30. Ex.: o `POST` de `/notificationSink` (12.3.1.2.3.2.1.3.1) tem `mentions =
+[NotifyThresholdCrossing, notifyThresholdCrossing]` — o salto para a tabela do tipo.
+
+**Testes:** 45 → 68. Um deles roda a regra sobre as séries 28 e 29 do corpus (se
+presente) e falha se algum `defines` sem dois-pontos/aspas não tiver forma de código —
+é o que se roda numa release nova (~50 s).
+
+As coleções ainda não têm esses campos: entram na reindexação única (plano 2.4).

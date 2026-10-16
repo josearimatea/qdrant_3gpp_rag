@@ -37,6 +37,33 @@ DEFAULT_METADATA_FIELD_INFO = [
         description="Specification name (e.g., '28532')",
         type="string",
     ),
+    AttributeInfo(
+        name="clause",
+        description=(
+            "Exact clause number of one section (e.g., '12.3.1.2.4.2.1'). Use only when "
+            "the query names a precise clause; for a clause and everything under it use "
+            "clause_ancestors"
+        ),
+        type="string",
+    ),
+    AttributeInfo(
+        name="clause_ancestors",
+        description=(
+            "Restricts the search to a clause and all its sub-clauses (e.g., '12.3' "
+            "matches 12.3, 12.3.1, 12.3.1.2.3.2.1.3.1 ...). Use to scope a search to one "
+            "service or chapter of a spec"
+        ),
+        type="string",
+    ),
+    AttributeInfo(
+        name="defines",
+        description=(
+            "Exact name of a data type, enumeration, notification, operation or resource "
+            "(e.g., 'NotifyThresholdCrossing', 'notifyMOICreation', '/notificationSink'): "
+            "returns the section that defines it. Case-sensitive"
+        ),
+        type="string",
+    ),
 ]
 
 DEFAULT_DOCUMENT_CONTENT_DESCRIPTION = "Processed content of 3GPP specifications"

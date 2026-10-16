@@ -72,4 +72,4 @@ class TestBuild3gppSegments:
             assert seg["series"] == "28_series"
             assert seg["spec"] == "28532-i00"
             assert seg["text"].strip()
-            assert seg["clause"] == "1" and seg["chunking"] == "sections-v1"
+            assert seg["clause"] == "1" and seg["chunking"] == "sections-v2"
