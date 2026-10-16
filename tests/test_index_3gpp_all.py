@@ -3,23 +3,22 @@
 import os
 
 from qdrant_3gpp_rag.index_3gpp_all import (
-    _flatten_markdown,
+    _clean_markdown,
     build_3gpp_segments,
     load_3gpp_specs,
 )
 
 
-class TestFlattenMarkdown:
+class TestCleanMarkdown:
 
-    def test_table_becomes_plain_text(self):
-        md = "| A | B |\n|---|---|\n| 1 | 2 |"
-        out = _flatten_markdown(md)
-        # Cell values survive as readable text.
-        for token in ("A", "B", "1", "2"):
-            assert token in out
+    def test_headings_and_tables_stay_markdown(self):
+        md = "##### 12.1 POST {#post-4 .H6}\n\n| A | B |\n|---|---|\n| 1 | 2 |"
+        out = _clean_markdown(md)
+        assert out.startswith("##### 12.1 POST\n")          # marker kept, attrs dropped
+        assert "| 1 | 2 |" in out
 
     def test_blank_lines_collapsed(self):
-        out = _flatten_markdown("para1\n\n\n\n\npara2")
+        out = _clean_markdown("para1\n\n\n\n\npara2")
         assert "\n\n\n" not in out
         assert "para1" in out and "para2" in out
 
@@ -54,13 +53,17 @@ class TestLoad3gppSpecs:
         root = self._make_tree(tmp_path)
         assert load_3gpp_specs(root, releases=["Rel-17"]) == []
 
+    def test_spec_filter(self, tmp_path):
+        root = self._make_tree(tmp_path)
+        assert [s["spec"] for s in load_3gpp_specs(root, specs=["32160-i00"])] == ["32160-i00"]
+
 
 class TestBuild3gppSegments:
 
     def test_segments_carry_metadata(self):
         specs = [{
             "release": "Rel-18", "series": "28_series", "spec": "28532-i00",
-            "processed_text": "# H\n" + ("word " * 400),  # long enough to split
+            "processed_text": "# 1 Scope\n" + ("word " * 400),
         }]
         segments = build_3gpp_segments(specs)
         assert len(segments) >= 1
@@ -69,3 +72,4 @@ class TestBuild3gppSegments:
             assert seg["series"] == "28_series"
             assert seg["spec"] == "28532-i00"
             assert seg["text"].strip()
+            assert seg["clause"] == "1" and seg["chunking"] == "sections-v1"

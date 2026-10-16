@@ -58,6 +58,8 @@ def main() -> None:
                         help="Restrict to a release folder (repeatable, e.g. --release Rel-18).")
     parser.add_argument("--series", action="append", default=None,
                         help="Restrict to a series folder (repeatable, e.g. --series 28_series).")
+    parser.add_argument("--spec", action="append", default=None,
+                        help="Restrict to a spec file stem (repeatable, e.g. --spec 28532-i00).")
     parser.add_argument("--device", default="cpu", help="Embedding device: cpu | cuda.")
     parser.add_argument("--qdrant-host", default="localhost", help="Qdrant host.")
     parser.add_argument("--qdrant-port", type=int, default=6333, help="Qdrant port.")
@@ -79,6 +81,7 @@ def main() -> None:
             qdrant_port=args.qdrant_port,
             releases=args.release,
             series=args.series,
+            specs=args.spec,
             output_dir=args.output_dir,
             force_chunk_rebuild=args.force_chunks,
             recreate=not args.no_recreate,

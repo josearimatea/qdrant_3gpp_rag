@@ -186,7 +186,7 @@ def index_segments(
     factory: QdrantFactory,
     collection_name: str,
     text_key: str = "text",
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_size: Optional[int] = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     embedding_dim: int = DEFAULT_EMBEDDING_DIM,
     recreate: bool = True,
@@ -205,6 +205,8 @@ def index_segments(
         collection_name: target collection.
         text_key: key in each segment holding the text (default "text").
         chunk_size, chunk_overlap, embedding_dim, recreate: as in index_document.
+            chunk_size=None indexes each segment as ONE chunk — for segments already
+            cut (spec_sections.chunk_spec_sections: one per section).
 
     Returns:
         Total number of chunks indexed across all segments.
@@ -222,7 +224,8 @@ def index_segments(
         if not text:
             continue
         base = {k: v for k, v in seg.items() if k != text_key}
-        chunks = chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        chunks = ([text] if chunk_size is None else
+                  chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap))
         for i, chunk in enumerate(chunks):
             all_chunks.append(chunk)
             all_metadatas.append({**base, "chunk_index": i})
