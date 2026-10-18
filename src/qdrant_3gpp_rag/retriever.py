@@ -4,8 +4,9 @@ Unified retriever for Qdrant-backed RAG.
 Two retrieval strategies:
   - Manual filter mode: caller provides explicit metadata filters.
   - Self-query mode: an LLM infers the metadata filters from the natural-language
-    query (via structured output), then a dense similarity search runs with those
-    filters applied.
+    query (via structured output), then a similarity search runs with those
+    filters applied — hybrid (dense + BM25) when the collection has a sparse
+    vector, dense-only otherwise.
 
 The self-query path is built on langchain_core structured output — the LLM fills
 a small Pydantic model of filter fields — rather than the legacy
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field, create_model
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
 from qdrant_3gpp_rag._types import RetrievalResult
-from qdrant_3gpp_rag.factory import QdrantFactory
+from qdrant_3gpp_rag.factory import AUTO, QdrantFactory
 from qdrant_3gpp_rag.self_query import (
     DEFAULT_DOCUMENT_CONTENT_DESCRIPTION,
     DEFAULT_METADATA_FIELD_INFO,
@@ -132,15 +133,15 @@ def retrieve(
     filters: Optional[Dict[str, Any]] = None,
     metadata_field_info: Optional[Sequence] = None,
     document_content_description: Optional[str] = None,
-    sparse_vector_name: Optional[str] = None,
+    sparse_vector_name: Optional[str] = AUTO,
 ) -> RetrievalResult:
     """Core retrieval function.
 
     Three modes, chosen by the arguments provided:
-      - filters given: manual exact filter + dense similarity search.
+      - filters given: manual exact filter + similarity search.
       - no filters, llm given: the LLM infers filters from the query (self-query),
         then the same filtered similarity search runs.
-      - no filters, no llm: plain dense similarity search over the whole
+      - no filters, no llm: plain similarity search over the whole
         collection (no metadata filter).
 
     Args:
@@ -152,8 +153,9 @@ def retrieve(
         filters: Dict of metadata key-value pairs for exact matching.
         metadata_field_info: Override default metadata schema for self-query.
         document_content_description: Override default for self-query.
-        sparse_vector_name: Pass None (default) for dense-only collections built
-            by indexer.index_document; pass "text-sparse" for hybrid collections.
+        sparse_vector_name: AUTO (default) searches hybrid — dense + BM25, fused
+            by RRF — when the collection holds the sparse vector, dense-only
+            otherwise; None forces dense-only.
 
     Returns:
         RetrievalResult with docs, generated_query, and generated_filter.
@@ -179,7 +181,7 @@ def retrieve(
         )
         filter_desc = str(applied_filters) if applied_filters else "No filter applied"
     else:
-        # Plain dense similarity search — no metadata filter, no LLM.
+        # Plain similarity search — no metadata filter, no LLM.
         logger.info("Using plain vector search (no filters, no LLM)")
         search_query = query
         applied_filters = {}
@@ -209,7 +211,7 @@ def get_relevant_documents(
     k: int = 5,
     filters: Optional[Dict[str, Any]] = None,
     formatter: Callable[[Document], str] = format_document,
-    sparse_vector_name: Optional[str] = None,
+    sparse_vector_name: Optional[str] = AUTO,
 ) -> List[str]:
     """Retrieve + format as strings ready for prompt injection."""
     result = retrieve(

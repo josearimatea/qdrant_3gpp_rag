@@ -45,16 +45,50 @@ class TestQdrantFactorySingleton:
         f2 = QdrantFactory.get_instance(device="cpu")
         assert f1 is not f2
 
+    @staticmethod
+    def _collection(factory, sparse):
+        factory.client.collection_exists.return_value = True
+        factory.client.get_collection.return_value.config.params.sparse_vectors = (
+            {"text-sparse": object()} if sparse else None)
+
     @patch("qdrant_3gpp_rag.factory.QdrantVectorStore")
     @patch("qdrant_3gpp_rag.factory.QdrantClient")
     @patch("qdrant_3gpp_rag.factory.HuggingFaceEmbeddings")
-    def test_get_vector_store_uses_collection_name(self, mock_emb, mock_client, mock_vs_cls):
+    def test_a_dense_only_collection_is_searched_dense(self, mock_emb, mock_client, mock_vs_cls):
         factory = QdrantFactory.get_instance()
-        vs = factory.get_vector_store("my_collection")
+        self._collection(factory, sparse=False)
+        factory.get_vector_store("my_collection")
         mock_vs_cls.assert_called_once_with(
             client=factory.client,
             collection_name="my_collection",
             embedding=factory.embeddings,
             vector_name="text-dense",
-            sparse_vector_name="text-sparse",
         )
+
+    @patch("qdrant_3gpp_rag.factory.FastEmbedSparse")
+    @patch("qdrant_3gpp_rag.factory.QdrantVectorStore")
+    @patch("qdrant_3gpp_rag.factory.QdrantClient")
+    @patch("qdrant_3gpp_rag.factory.HuggingFaceEmbeddings")
+    def test_a_collection_with_the_sparse_vector_is_searched_hybrid(
+            self, mock_emb, mock_client, mock_vs_cls, mock_sparse):
+        from langchain_qdrant import RetrievalMode
+
+        factory = QdrantFactory.get_instance()
+        self._collection(factory, sparse=True)
+        factory.get_vector_store("my_collection")
+        kwargs = mock_vs_cls.call_args.kwargs
+        assert kwargs["sparse_vector_name"] == "text-sparse"
+        assert kwargs["retrieval_mode"] == RetrievalMode.HYBRID
+        mock_sparse.assert_called_once_with(model_name="Qdrant/bm25")
+
+    @patch("qdrant_3gpp_rag.factory.FastEmbedSparse")
+    @patch("qdrant_3gpp_rag.factory.QdrantVectorStore")
+    @patch("qdrant_3gpp_rag.factory.QdrantClient")
+    @patch("qdrant_3gpp_rag.factory.HuggingFaceEmbeddings")
+    def test_none_forces_dense_and_never_loads_bm25(
+            self, mock_emb, mock_client, mock_vs_cls, mock_sparse):
+        factory = QdrantFactory.get_instance()
+        self._collection(factory, sparse=True)
+        factory.get_vector_store("my_collection", sparse_vector_name=None)
+        assert "sparse_vector_name" not in mock_vs_cls.call_args.kwargs
+        mock_sparse.assert_not_called()

@@ -19,9 +19,20 @@ import re
 from typing import Any, Dict, List, Optional
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
-from qdrant_client.http.models import Distance, PayloadSchemaType, VectorParams
+from qdrant_client.http.models import (
+    Distance,
+    Modifier,
+    PayloadSchemaType,
+    SparseVectorParams,
+    VectorParams,
+)
 
-from qdrant_3gpp_rag.factory import QdrantFactory, DEFAULT_VECTOR_NAME
+from qdrant_3gpp_rag.factory import (
+    AUTO,
+    DEFAULT_SPARSE_VECTOR_NAME,
+    DEFAULT_VECTOR_NAME,
+    QdrantFactory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +207,7 @@ def index_segments(
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
     embedding_dim: int = DEFAULT_EMBEDDING_DIM,
     recreate: bool = True,
+    hybrid: bool = True,
 ) -> int:
     """Chunk and index a list of segments, each carrying its own metadata.
 
@@ -213,6 +225,9 @@ def index_segments(
         chunk_size, chunk_overlap, embedding_dim, recreate: as in index_document.
             chunk_size=None indexes each segment as ONE chunk — for segments already
             cut (spec_sections.chunk_spec_sections: one per section).
+        hybrid: create the collection with a BM25 sparse vector ("text-sparse",
+            IDF applied by Qdrant) besides the dense one, and write both;
+            retrieval then fuses the two rankings (factory.get_vector_store).
 
     Returns:
         Total number of chunks indexed across all segments.
@@ -253,13 +268,19 @@ def index_segments(
             vectors_config={
                 DEFAULT_VECTOR_NAME: VectorParams(size=embedding_dim, distance=Distance.COSINE)
             },
+            sparse_vectors_config=(
+                {DEFAULT_SPARSE_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF)}
+                if hybrid else None),
         )
         for name in KEYWORD_INDEXED_FIELDS:
             client.create_payload_index(collection_name, field_name=f"metadata.{name}",
                                         field_schema=PayloadSchemaType.KEYWORD)
-        logger.info("Created collection '%s' (dim=%d).", collection_name, embedding_dim)
+        logger.info("Created collection '%s' (dim=%d, hybrid=%s).",
+                    collection_name, embedding_dim, hybrid)
 
-    vector_store = factory.get_vector_store(collection_name, sparse_vector_name=None)
+    # AUTO: writes both vectors when the collection has the sparse one (a kept,
+    # dense-only collection with recreate=False stays dense-only).
+    vector_store = factory.get_vector_store(collection_name, sparse_vector_name=AUTO)
     vector_store.add_texts(texts=all_chunks, metadatas=all_metadatas)
 
     total = client.count(collection_name).count

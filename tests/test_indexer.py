@@ -121,11 +121,23 @@ class TestIndexSegments:
             factory=factory, collection_name="c", chunk_size=None,
         )
 
+        sparse = factory.client.create_collection.call_args.kwargs["sparse_vectors_config"]
+        assert list(sparse) == ["text-sparse"] and sparse["text-sparse"].modifier == "idf"
+        factory.get_vector_store.assert_called_once_with("c", sparse_vector_name="auto")
         indexed = {c.kwargs["field_name"] for c in factory.client.create_payload_index.call_args_list}
         assert indexed == {"metadata.spec", "metadata.clause", "metadata.clause_ancestors",
                            "metadata.defines", "metadata.mentions"}
         _, kwargs = vs.add_texts.call_args
         assert kwargs["metadatas"][0]["clause_ancestors"] == ["12", "12.3"]
+
+
+    def test_hybrid_false_creates_a_dense_only_collection(self):
+        factory = MagicMock()
+        factory.client.collection_exists.return_value = False
+        factory.client.count.return_value = MagicMock(count=1)
+        index_segments([{"text": "x"}], factory=factory, collection_name="c",
+                       chunk_size=None, hybrid=False)
+        assert factory.client.create_collection.call_args.kwargs["sparse_vectors_config"] is None
 
 
 class TestDropCollection:

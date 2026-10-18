@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Shared Qdrant/RAG retrieval package for 3GPP projects"
 requires-python = ">=3.10"
 dependencies = [
+    "fastembed>=0.9.0",
     "langchain>=0.3.27",
     "langchain-community>=0.3.31",
     "langchain-huggingface>=0.3.1",
@@ -11,8 +12,6 @@ dependencies = [
     "qdrant-client>=1.15.1",
     "sentence-transformers>=5.0.0",
     "torch>=2.0.0",
-    "beautifulsoup4>=4.12.0",
-    "markdown>=3.5",
 ]
 
 [project.optional-dependencies]

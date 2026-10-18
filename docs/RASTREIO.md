@@ -114,3 +114,48 @@ X"). Os outros são definições certas que não repetem o nome (títulos-pai de
 operação, com corpo vazio — nem viram pedaço; tipos `…Rm`, que citam o tipo base;
 operações como `createMOI`). Único erro achado: `Type: Void` → `Void` (cláusula
 removida); a regra agora rejeita "Void".
+
+---
+
+## 18/out/2026 — busca híbrida: denso + BM25 (plano 2.2)
+
+**O que mudou.**
+- Dependência nova `fastembed` (modelo esparso `Qdrant/bm25`). Saíram do
+  `pyproject.toml` `beautifulsoup4` e `markdown`, sem uso desde que o markdown deixou
+  de passar por HTML (`8c6966a`); a alteração antiga do `uv.lock` era só a
+  sincronização desses dois e deixou de existir. O lock commitado difere do anterior
+  só pelo `fastembed` e suas dependências (onnxruntime, py-rust-stemmers, mmh3 …).
+- `index_segments(..., hybrid=True)`: a coleção é criada com o vetor denso
+  `text-dense` **e** o esparso `text-sparse` (IDF aplicado pelo Qdrant), e os dois são
+  gravados. `index_document` (coleções temporárias) continua só densa.
+- `factory.get_vector_store` / `retrieve`: o padrão agora é `AUTO` — lê a
+  configuração da coleção e, se ela tem `text-sparse`, busca em modo híbrido (as duas
+  listas juntadas pela posição, RRF); senão, só denso, como antes. Os irmãos não
+  precisam passar nada. `None` força só denso. O BM25 só é carregado quando uma
+  coleção híbrida é usada.
+
+**Por quê.** O denso busca por significado e confunde nomes parecidos (GET/PUT,
+`NotifyThresholdCrossing`/`PerfNotificationTypes`); o BM25 conta as palavras exatas,
+com mais peso para as raras (`hysteresis`, `monitorGranularityPeriod`). O híbrido junta
+as duas listas.
+
+**Medido** (TS 28.532, coleção temporária, modelo ainda MiniLM, mesma coleção
+consultada nos dois modos; posição do pedaço esperado entre os 10 primeiros):
+
+| pergunta | filtro | só denso | híbrido |
+|---|---|---|---|
+| `HTTP POST response status codes 204 4XX 5XX` | `clause_ancestors=12.3` | 1 | 1 |
+| `NotifyThresholdCrossing` | — | 4 | 3 |
+| `HTTP GET` | `clause_ancestors=12.1` | 2 (HTTP PUT em 1º) | 1 |
+| `notifyThresholdCrossing hysteresis monitorGranularityPeriod` | — | 10 | 2 |
+
+`NotifyEvent` com escopo `12.1`: nenhum dos dois acha a definição — não há tipo
+`NotifyEvent` definido em 12.1 na 28.532 (a notificação `notifyEvent` é a 11.1.1.10);
+reavaliar com o modelo novo. O "grafo leve" funciona: os `mentions` do POST
+(`NotifyThresholdCrossing`, `notifyThresholdCrossing`) levam, só por filtro
+`defines`, a `12.3.1.2.4.2.1 Type NotifyThresholdCrossing` e a
+`12.3.1.2.2.2 Notification notifyThresholdCrossing`. Indexar os 605 pedaços com os
+dois vetores levou 4 s (GPU).
+
+**Testes:** 68 → 73 (factory: coleção só densa → denso; com `text-sparse` → híbrido;
+`None` não carrega o BM25. indexer: coleção criada com o esparso IDF; `hybrid=False`).

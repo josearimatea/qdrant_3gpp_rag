@@ -14,10 +14,14 @@ import threading
 from typing import Dict, Optional, Tuple
 
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_qdrant import QdrantVectorStore
+from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import QdrantClient
 
 logger = logging.getLogger(__name__)
+
+# Sentinel for get_vector_store(sparse_vector_name=...): read the collection's own
+# configuration and search hybrid only when it holds the sparse vector.
+AUTO = "auto"
 
 # Defaults — match both projects' current hardcoded values
 DEFAULT_QDRANT_HOST = "localhost"
@@ -27,6 +31,10 @@ DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_DEVICE = "cpu"
 DEFAULT_VECTOR_NAME = "text-dense"
 DEFAULT_SPARSE_VECTOR_NAME = "text-sparse"
+# BM25 term weights (fastembed); IDF is applied by Qdrant (Modifier.IDF on the
+# collection's sparse vector). Catches exact identifiers ("NotifyEvent", "4xx/5xx")
+# that a dense model blurs.
+DEFAULT_SPARSE_MODEL = "Qdrant/bm25"
 
 
 class QdrantFactory:
@@ -59,6 +67,27 @@ class QdrantFactory:
             model_kwargs={"device": device},
             encode_kwargs={"normalize_embeddings": True},
         )
+        self._sparse_embeddings: Optional[FastEmbedSparse] = None
+        self._sparse_lock = threading.Lock()
+
+    @property
+    def sparse_embeddings(self) -> FastEmbedSparse:
+        """The BM25 sparse model, loaded on first use (a dense-only caller never
+        pays for it)."""
+        if self._sparse_embeddings is None:
+            with self._sparse_lock:
+                if self._sparse_embeddings is None:
+                    logger.info("Loading sparse model %s", DEFAULT_SPARSE_MODEL)
+                    self._sparse_embeddings = FastEmbedSparse(model_name=DEFAULT_SPARSE_MODEL)
+        return self._sparse_embeddings
+
+    def has_sparse_vector(self, collection_name: str,
+                          sparse_vector_name: str = DEFAULT_SPARSE_VECTOR_NAME) -> bool:
+        """Whether an existing collection holds the named sparse vector."""
+        if not self.client.collection_exists(collection_name):
+            return False
+        params = self.client.get_collection(collection_name).config.params
+        return sparse_vector_name in (params.sparse_vectors or {})
 
     @classmethod
     def get_instance(
@@ -90,16 +119,23 @@ class QdrantFactory:
         self,
         collection_name: str,
         vector_name: str = DEFAULT_VECTOR_NAME,
-        sparse_vector_name: Optional[str] = DEFAULT_SPARSE_VECTOR_NAME,
+        sparse_vector_name: Optional[str] = AUTO,
     ) -> QdrantVectorStore:
         """Return a QdrantVectorStore for the given collection.
 
-        Pass sparse_vector_name=None for a dense-only collection (e.g. one built
-        by indexer.index_document, which produces no sparse vectors). The default
-        keeps the hybrid dense+sparse behaviour used by pre-built collections.
+        sparse_vector_name:
+          AUTO (default) — hybrid (dense + BM25, fused by RRF) when the collection
+              holds the "text-sparse" vector, dense-only otherwise; callers need
+              not know how a collection was built;
+          None — dense-only;
+          a name — hybrid with that sparse vector (e.g. while indexing a new
+              hybrid collection).
 
-        This is cheap to call repeatedly — it does NOT reload the model.
+        This is cheap to call repeatedly — it does NOT reload the models.
         """
+        if sparse_vector_name == AUTO:
+            sparse_vector_name = (DEFAULT_SPARSE_VECTOR_NAME
+                                  if self.has_sparse_vector(collection_name) else None)
         kwargs = dict(
             client=self.client,
             collection_name=collection_name,
@@ -107,5 +143,7 @@ class QdrantFactory:
             vector_name=vector_name,
         )
         if sparse_vector_name is not None:
-            kwargs["sparse_vector_name"] = sparse_vector_name
+            kwargs.update(sparse_embedding=self.sparse_embeddings,
+                          sparse_vector_name=sparse_vector_name,
+                          retrieval_mode=RetrievalMode.HYBRID)
         return QdrantVectorStore(**kwargs)
