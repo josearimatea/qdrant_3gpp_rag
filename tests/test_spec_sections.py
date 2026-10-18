@@ -145,6 +145,7 @@ def test_defines_reads_the_name_from_a_3gpp_title(title, name):
     "6 Operation Points",
     "5.10.6.2 Operation modes",
     "12.3.1.2.3.2.1.3.1 POST",
+    "8.4.4.2.3 Type: Void",
     "Foreword",
 ])
 def test_a_title_that_defines_nothing(title):

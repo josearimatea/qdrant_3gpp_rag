@@ -117,7 +117,7 @@ def defines_of(title: str) -> List[str]:
         name = quoted.group("name").strip().strip("\\").strip()
         return [name] if name else []
     rest = _TRAILING_PARENS.sub("", rest).strip()     # "relocate (POST)", "X (Document)"
-    if not rest:
+    if not rest or rest.lower() == "void":            # "Type: Void" — a deleted clause
         return []
     if m.group("colon"):                               # "Resource: Individual Subscription"
         return [rest] if re.match(r"[A-Za-z0-9/.]", rest) else []

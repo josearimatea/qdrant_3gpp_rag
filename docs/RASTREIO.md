@@ -105,3 +105,12 @@ presente) e falha se algum `defines` sem dois-pontos/aspas não tiver forma de c
 é o que se roda numa release nova (~50 s).
 
 As coleções ainda não têm esses campos: entram na reindexação única (plano 2.4).
+
+Commit: `a6dad60`.
+
+**Conferência (18/out).** Cada `defines` do Rel-18 conferido contra o corpo da
+própria seção: 3.130 de 4.087 repetem o nome lá (2.254 na tabela "Definition of type
+X"). Os outros são definições certas que não repetem o nome (títulos-pai de recurso/
+operação, com corpo vazio — nem viram pedaço; tipos `…Rm`, que citam o tipo base;
+operações como `createMOI`). Único erro achado: `Type: Void` → `Void` (cláusula
+removida); a regra agora rejeita "Void".
