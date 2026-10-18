@@ -201,3 +201,37 @@ irmãos lerem o nome do modelo nas configurações sem pagar isso (e sem quebrar
 para `qdrant_3gpp_rag/embedding_config.py`, que não importa nada pesado, e o `__init__`
 passou a carregar cada nome só no primeiro uso. `from qdrant_3gpp_rag.embedding_config
 import DEFAULT_EMBEDDING_MODEL`: 0,01 s, sem torch. Os nomes exportados não mudaram.
+
+Commit: `f01722a`.
+
+---
+
+## 18/out/2026 — os irmãos passam a usar tudo daqui (plano 2.3, 2ª parte)
+
+**Regra.** Modelo, cliente do Qdrant, vector store e busca vêm só deste pacote; nenhum
+irmão fixa modelo nem monta o seu factory. As configurações deles leem o modelo de
+`qdrant_3gpp_rag.embedding_config` (leve, sem torch).
+
+| repositório | o que mudou | commit |
+|---|---|---|
+| `openapi_rulesbank` | `EMBEDDING_MODEL`/`EMBEDDING_DIM` daqui; a `openapi_reference` largou cliente, modelo e vector store próprios: usa o `QdrantFactory` e é construída por `index_segments` (híbrida). `uv.lock` segue as dependências deste pacote | `6ac2a99` (branch `feature/ref`) |
+| `openapi_analysis` | `judge_settings`: modelo e dimensão daqui, protegidos por `try` como o `dotenv` (o pacote só vem com o extra `[judge]`); `EMBEDDING_DEVICE = "cpu"` mantido. 139 testes | `0625c20` |
+| `openapi_generator` | `qdrant-3gpp-rag` como dependência local; `rag/qdrant_factory.py` embrulha o `QdrantFactory`; `get_relevant_chunks` usa o `retrieve` daqui; `tools/rag_tools.py` e `rag/spec_index.py` usam o factory. Corrigido de passagem: o filtro local não usava o prefixo `metadata.` (nunca casaria; nenhum chamador passava filtro) | `7316ef4` |
+| `openapi_chatbotUI` | `qdrant-3gpp-rag` como dependência local; `infrastructure/qdrant.py` devolve o `QdrantFactory` daqui, criado uma vez (antes o modelo era recarregado a cada pergunta); `retriever.py` usa o `retrieve` daqui (mesmo defeito do filtro, corrigido). **Removidos**, por defasados: a ingestão (`src/app/ingest`, os `.pkl` de `files/chunks`, `TSPEC_DATA`/`CHUNKS_FILE`), `retriever_hard.py`, `self_query.py` e as dependências só deles (`langchain-classic`, `lark`, `beautifulsoup4`, `markdown`). Coleção de produção: `3gpp` (não existia) → `3gpp_rel18_all` | `044ee72` |
+
+**Neste pacote:** removido `tests/test_rag_3gpp_rel18.ipynb`, defasado (MiniLM fixo,
+busca sem vetor nomeado, `text-davinci-003`).
+
+**Conferido.** Busca por `MiniLM` e `384` nos cinco repositórios (código e
+configuração): sobram só dois comentários que explicam a troca e um "384" que é número
+de linha numa listagem de teste do rulesbank. Provas de ponta a ponta com o modelo novo,
+em coleções temporárias apagadas no fim: generator (coleção de spec por execução, 768
+dimensões, busca e remoção) e chatbotUI (filtro `clause_ancestors` casando pelo prefixo
+`metadata.`, factory único). Tempo de import das configurações: generator 0,6 s,
+analysis 0,02 s, chatbotUI 0,02 s, todos sem torch.
+
+**Pendente.** O `qdrant-client` do generator está na 1.18.0 e o servidor na 1.16.3 (o
+cliente avisa incompatibilidade); o lock do generator não é versionado, então não dá
+para saber se já era assim. Até a reindexação (2.4), as coleções continuam com 384
+dimensões e qualquer irmão que buscar nelas recebe erro de dimensão — não rodar os
+irmãos até lá.
