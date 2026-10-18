@@ -31,6 +31,11 @@ lost the title that said what it was about. Here the unit is the clause:
       defines          — what the section defines, read from a 3GPP-style title
                          ("Type NotifyThresholdCrossing", "Enumeration: DataInd",
                          'Resource "/notificationSink"'), the clean name only;
+                         a section whose own title defines nothing inherits the
+                         name of its nearest defining parent when that parent has
+                         no text of its own ("11.1.1.10 Notification notifyEvent" is
+                         split into "Definition" and "Input parameters": both
+                         define notifyEvent);
       mentions         — the names defined elsewhere in the SAME spec that the
                          section cites (a light graph: fetch the definition of each
                          type a section uses with a filter defines = X).
@@ -89,6 +94,9 @@ class Section:
     level: int                     # heading level (1 = "#" / "===", 2 = "##" / "---" ...)
     annex: bool = False
     parents: List[str] = field(default_factory=list)   # titles, outermost first
+    # What the nearest defining parent defines, when it has no text of its own
+    # (its content is this section and its siblings); [] otherwise.
+    parent_defines: List[str] = field(default_factory=list)
 
 
 def clause_of(title: str) -> str:
@@ -191,9 +199,13 @@ def split_sections(text: str) -> List[Section]:
         in_annex = in_annex or bool(_ANNEX.match(title))
         while stack and not _is_parent(stack[-1], clause, level):
             stack.pop()
+        # Only the NEAREST defining parent counts: a section under "Type Y" (with
+        # text) under 'Resource "/x"' (without) belongs to Y, not to /x.
+        definer = next((s for s in reversed(stack) if defines_of(s.title)), None)
+        parent_defines = defines_of(definer.title) if definer and not definer.body else []
         sec = Section(clause=clause, title=title, heading=_ATTRS.sub("", text[start:end]).strip(),
                       body=text[end:body_end].strip(), level=level, annex=in_annex,
-                      parents=[s.title for s in stack])
+                      parents=[s.title for s in stack], parent_defines=parent_defines)
         sections.append(sec)
         stack.append(sec)
     return sections
@@ -248,7 +260,7 @@ def chunk_spec_sections(
             n = len(bodies)
             parts = [(f"{prefix}{sec.heading} (part {i}/{n})\n\n{b}".strip() if sec.heading
                       else b, b) for i, b in enumerate(bodies, 1)]
-        kept.append((sec, defines_of(sec.title), parts))
+        kept.append((sec, defines_of(sec.title) or sec.parent_defines, parts))
 
     # Mentions need the whole spec's definitions first; only the body is searched (the
     # parents' titles in the prefix are context, not citations).

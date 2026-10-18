@@ -185,6 +185,51 @@ def test_mentions_are_the_names_defined_in_the_same_spec():
     assert by["5.1"]["clause_ancestors"] == ["5", "5.1"]
 
 
+INHERIT_SPEC = """\
+#### 11.1.1.10 Notification notifyEvent
+
+##### 11.1.1.10.1 Definition
+
+The notification notifyEvent is sent when an event occurs.
+
+##### 11.1.1.10.2 Input parameters
+
+| eventType | M |
+
+#### 12.3 Resource \\"/x\\"
+
+##### 12.3.1 Type YangInfo
+
+Definition of type YangInfo.
+
+###### 12.3.1.1 Constraints
+
+Only for YangInfo.
+
+##### 12.3.2 HTTP methods
+
+###### 12.3.2.1 POST
+
+Creates an x.
+
+#### 12.4 Data types
+
+##### 12.4.1 General
+
+Nothing defined here.
+"""
+
+
+def test_children_of_a_defining_title_without_text_inherit_its_name():
+    by = _by_clause(chunk_spec_sections(INHERIT_SPEC))
+    assert by["11.1.1.10.1"]["defines"] == ["notifyEvent"]       # Definition
+    assert by["11.1.1.10.2"]["defines"] == ["notifyEvent"]       # Input parameters
+    assert by["12.3.2.1"]["defines"] == ["/x"]                   # POST of the resource
+    assert by["12.3.1"]["defines"] == ["YangInfo"]                  # its own title wins
+    assert by["12.3.1.1"]["defines"] == []     # nearest definer (YangInfo) has text: no jump to /x
+    assert by["12.4.1"]["defines"] == []       # "Data types" defines nothing
+
+
 DATASET = os.path.join(os.path.dirname(__file__), "..", "..", "..", "Dataset", "TSpec-LLM",
                        "3GPP-clean", "Rel-18", "28_series", "28532-i00.md")
 

@@ -235,3 +235,42 @@ cliente avisa incompatibilidade); o lock do generator não é versionado, então
 para saber se já era assim. Até a reindexação (2.4), as coleções continuam com 384
 dimensões e qualquer irmão que buscar nelas recebe erro de dimensão — não rodar os
 irmãos até lá.
+
+Commit: `79790fa`.
+
+---
+
+## 18/out/2026 — servidor Qdrant 1.17.1; reindexação da `3gpp_rel18_28_28532` (plano 2.4, 1ª coleção)
+
+**Servidor.** O container `qdrant-local` rodava `qdrant/qdrant:latest` de 10 meses atrás
+(1.16.3); os clientes eram 1.16 (analysis, fixado), 1.17 (este pacote, rulesbank) e 1.18
+(generator, chatbotUI — o do chatbotUI já era 1.18 antes deste trabalho). O Qdrant só
+garante compatibilidade com até uma versão menor de diferença, e o `latest` de hoje já é
+a 1.19. O servidor foi trocado (pelo usuário, como root) por `qdrant/qdrant:v1.17.1`,
+**versão fixada**, com os dados na mesma pasta (`/home/arimatea/qdrant_storage`, cópia
+em `qdrant_storage.bak-1.16.3`): todos os clientes ficam a no máximo uma versão. As
+quatro coleções voltaram íntegras.
+
+**Herança do `defines`.** Na validação, `notifyEvent` (TS 28.532, 11.1.1.10) não era
+alcançável por `defines`: o título "Notification notifyEvent" não tem texto próprio — o
+conteúdo está nos filhos "Definition" e "Input parameters" — e um título sem texto não
+vira pedaço. Agora uma seção cujo título não define nada herda o nome do **pai
+definidor mais próximo**, se esse pai não tiver texto próprio (se tiver, a seção é
+parte dele e não herda de mais acima). TS 28.532: pedaços com `defines` 154 → 271 (117
+herdados: "Input parameters", "URI", "Description", "Definition", métodos HTTP,
+"From-state"/"To-state"); série 28: 174 → 322.
+
+**Reindexado** `3gpp_rel18_28_28532` (GPU, 27 s): 605 pedaços, `text-dense` 768 + 
+`text-sparse` (IDF), índices em `spec`, `clause`, `clause_ancestors`, `defines`,
+`mentions`.
+
+**Validação (plano 2.5), na coleção:**
+
+| caso | resultado |
+|---|---|
+| `HTTP POST response status codes 204 4XX 5XX`, `clause_ancestors=12.3` | 1º: `12.3.1.2.3.2.1.3.1 POST`, com `Error-Response 4xx/5xx` |
+| `NotifyThresholdCrossing` | 3º: `12.3.1.2.4.2.1`, com `hysteresis` e `monitorGranularityPeriod`; e direto pelo `mentions` do POST + filtro `defines` |
+| `HTTP GET`, `clause_ancestors=12.1` | 1º e 2º: as duas partes de `12.1.1.3.2.1.3.2` (a tabela `4xx/5xx` está na 2ª) |
+| `NotifyEvent`, escopo 12.1 | não existe tipo `NotifyEvent` na 28.532; `defines=notifyEvent` traz 11.1.1.10.1 e 11.1.1.10.2 |
+
+**Testes:** 76 → 77.
