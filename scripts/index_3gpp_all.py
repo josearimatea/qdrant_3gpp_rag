@@ -32,6 +32,7 @@ import logging
 import socket
 import sys
 
+from qdrant_3gpp_rag.factory import DEFAULT_DEVICE
 from qdrant_3gpp_rag.index_3gpp_all import index_3gpp_all
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -60,7 +61,8 @@ def main() -> None:
                         help="Restrict to a series folder (repeatable, e.g. --series 28_series).")
     parser.add_argument("--spec", action="append", default=None,
                         help="Restrict to a spec file stem (repeatable, e.g. --spec 28532-i00).")
-    parser.add_argument("--device", default="cpu", help="Embedding device: cpu | cuda.")
+    parser.add_argument("--device", default=DEFAULT_DEVICE,
+                        help="Embedding device: cuda | cpu (default: the GPU when there is one).")
     parser.add_argument("--qdrant-host", default="localhost", help="Qdrant host.")
     parser.add_argument("--qdrant-port", type=int, default=6333, help="Qdrant port.")
     parser.add_argument("--output-dir", default="output",

@@ -30,7 +30,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from qdrant_3gpp_rag.factory import QdrantFactory
+from qdrant_3gpp_rag.factory import DEFAULT_DEVICE, QdrantFactory
 from qdrant_3gpp_rag.indexer import index_segments
 from qdrant_3gpp_rag.spec_sections import chunk_spec_sections
 
@@ -139,7 +139,7 @@ def index_3gpp_all(
     collection_name: str,
     *,
     factory: Optional[QdrantFactory] = None,
-    device: str = "cpu",
+    device: str = DEFAULT_DEVICE,
     qdrant_host: str = "localhost",
     qdrant_port: int = 6333,
     releases: Optional[List[str]] = None,
@@ -157,7 +157,8 @@ def index_3gpp_all(
         directory: root of the ``release/series/spec.md`` tree.
         collection_name: target Qdrant collection (persistent).
         factory: optional QdrantFactory; created from `device` if omitted.
-        device: embedding device when building the factory ("cpu" / "cuda").
+        device: embedding device when building the factory ("cuda" / "cpu";
+            default: the GPU when there is one).
         qdrant_host: Qdrant host.
         qdrant_port: Qdrant port.
         releases / series: optional folder whitelists (e.g. ["Rel-18"]).

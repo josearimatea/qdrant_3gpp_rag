@@ -27,14 +27,52 @@ AUTO = "auto"
 DEFAULT_QDRANT_HOST = "localhost"
 DEFAULT_QDRANT_PORT = 6333
 DEFAULT_QDRANT_TIMEOUT = 120
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-DEFAULT_DEVICE = "cpu"
+# The ONE embedding model of the 3GPP corpus and of every sibling repository: a query
+# must be embedded by the same model as the chunks it is compared with (768 != 384
+# dimensions). Siblings import these instead of pinning their own.
+# bge-base-en-v1.5 replaces all-MiniLM-L6-v2: it reads 512 tokens (MiniLM read ~256
+# and ignored the rest of a chunk) and is strong on technical English.
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
+DEFAULT_EMBEDDING_DIM = 768
+# Instruction the model was trained to see before a QUERY (never before a passage).
+QUERY_PREFIXES = {
+    "BAAI/bge-base-en-v1.5": "Represent this sentence for searching relevant passages: ",
+}
+
+
+def default_device() -> str:
+    """'cuda' when a GPU is available, else 'cpu'."""
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+DEFAULT_DEVICE = default_device()
 DEFAULT_VECTOR_NAME = "text-dense"
 DEFAULT_SPARSE_VECTOR_NAME = "text-sparse"
 # BM25 term weights (fastembed); IDF is applied by Qdrant (Modifier.IDF on the
 # collection's sparse vector). Catches exact identifiers ("NotifyEvent", "4xx/5xx")
 # that a dense model blurs.
 DEFAULT_SPARSE_MODEL = "Qdrant/bm25"
+
+
+def build_embeddings(
+    model_name: str = DEFAULT_EMBEDDING_MODEL,
+    device: str = DEFAULT_DEVICE,
+) -> HuggingFaceEmbeddings:
+    """The embeddings every repository should use: normalized vectors, and the
+    model's query instruction prepended to queries only (embed_query), not to the
+    indexed passages (embed_documents)."""
+    encode_kwargs = {"normalize_embeddings": True}
+    prefix = QUERY_PREFIXES.get(model_name)
+    # query_encode_kwargs replaces encode_kwargs for queries, so it repeats them.
+    query_encode_kwargs = {**encode_kwargs, "prompt": prefix} if prefix else {}
+    return HuggingFaceEmbeddings(
+        model_name=model_name,
+        model_kwargs={"device": device},
+        encode_kwargs=encode_kwargs,
+        query_encode_kwargs=query_encode_kwargs,
+    )
 
 
 class QdrantFactory:
@@ -62,11 +100,7 @@ class QdrantFactory:
             host, port, model_name, device,
         )
         self.client = QdrantClient(host=host, port=port, timeout=timeout)
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs={"device": device},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        self.embeddings = build_embeddings(model_name=model_name, device=device)
         self._sparse_embeddings: Optional[FastEmbedSparse] = None
         self._sparse_lock = threading.Lock()
 

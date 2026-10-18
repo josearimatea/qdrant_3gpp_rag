@@ -159,3 +159,35 @@ dois vetores levou 4 s (GPU).
 
 **Testes:** 68 → 73 (factory: coleção só densa → denso; com `text-sparse` → híbrido;
 `None` não carrega o BM25. indexer: coleção criada com o esparso IDF; `hybrid=False`).
+
+Commit: `db46962`.
+
+---
+
+## 18/out/2026 — modelo novo `BAAI/bge-base-en-v1.5`, neste pacote (plano 2.3, 1ª parte)
+
+**O que mudou.** O `factory.py` é a fonte única do modelo para os cinco repositórios:
+`DEFAULT_EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"` (substitui o
+`all-MiniLM-L6-v2`), `DEFAULT_EMBEDDING_DIM = 768` (era 384, no `indexer.py`) e
+`build_embeddings()`, que monta o modelo com vetores normalizados e o prefixo
+"Represent this sentence for searching relevant passages: " **só nas perguntas** (não
+nos pedaços). `DEFAULT_DEVICE` passa a ser a GPU quando existe, senão a CPU (era CPU
+fixo); vale também para `index_3gpp_all` e o `--device` do script. Exportados no
+`__init__` para os irmãos importarem.
+
+**Medido** (TS 28.532, coleção temporária híbrida; posição do pedaço esperado):
+
+| pergunta | MiniLM só denso | MiniLM híbrido | bge só denso | bge híbrido |
+|---|---|---|---|---|
+| POST 204 4XX 5XX (escopo 12.3) | 1 | 1 | 1 | 1 |
+| `NotifyThresholdCrossing` | 4 | 3 | 4 | 3 |
+| HTTP GET (escopo 12.1) | 2 | 1 | 1 | 1 |
+| `notifyThresholdCrossing hysteresis monitorGranularityPeriod` | 10 | 2 | 3 | 2 |
+
+Vetor de 768 dimensões; a mesma frase como pergunta e como pedaço dá vetores
+diferentes (cosseno 0,925), sinal de que o prefixo entra só na pergunta. `NotifyEvent`
+(escopo 12.1) continua sem resultado: não há esse tipo definido em 12.1 na 28.532.
+
+**Testes:** 73 → 76 (prefixo só na pergunta; modelo sem prefixo conhecido; GPU com
+fallback para CPU). Falta: os irmãos importarem daqui; reindexar (as coleções atuais
+são de 384 dimensões e passam a dar erro de dimensão com o modelo novo até lá).

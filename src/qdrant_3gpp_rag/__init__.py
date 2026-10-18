@@ -11,7 +11,13 @@ Quick start:
 """
 
 from qdrant_3gpp_rag._types import RetrievalResult
-from qdrant_3gpp_rag.factory import QdrantFactory
+from qdrant_3gpp_rag.factory import (
+    DEFAULT_DEVICE,
+    DEFAULT_EMBEDDING_DIM,
+    DEFAULT_EMBEDDING_MODEL,
+    QdrantFactory,
+    build_embeddings,
+)
 from qdrant_3gpp_rag.index_3gpp_all import (
     build_3gpp_segments,
     index_3gpp_all,
@@ -37,7 +43,11 @@ from qdrant_3gpp_rag.self_query import (
 )
 
 __all__ = [
+    "DEFAULT_DEVICE",
+    "DEFAULT_EMBEDDING_DIM",
+    "DEFAULT_EMBEDDING_MODEL",
     "QdrantFactory",
+    "build_embeddings",
     "RetrievalResult",
     "build_3gpp_segments",
     "build_self_query_filters",

@@ -29,6 +29,7 @@ from qdrant_client.http.models import (
 
 from qdrant_3gpp_rag.factory import (
     AUTO,
+    DEFAULT_EMBEDDING_DIM,
     DEFAULT_SPARSE_VECTOR_NAME,
     DEFAULT_VECTOR_NAME,
     QdrantFactory,
@@ -39,8 +40,6 @@ logger = logging.getLogger(__name__)
 # Chunking defaults — match the values both projects use today.
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
-# all-MiniLM-L6-v2 output dimension.
-DEFAULT_EMBEDDING_DIM = 384
 
 # Metadata fields given a keyword payload index on collection creation, so exact
 # filters on them (retriever._to_qdrant_filter) stay fast on a large collection.
