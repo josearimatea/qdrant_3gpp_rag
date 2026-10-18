@@ -191,3 +191,13 @@ diferentes (cosseno 0,925), sinal de que o prefixo entra só na pergunta. `Notif
 **Testes:** 73 → 76 (prefixo só na pergunta; modelo sem prefixo conhecido; GPU com
 fallback para CPU). Falta: os irmãos importarem daqui; reindexar (as coleções atuais
 são de 384 dimensões e passam a dar erro de dimensão com o modelo novo até lá).
+
+Commit: `00c4951`.
+
+**Import leve (18/out).** Importar o pacote leva ~6 s (carrega o torch, via
+`langchain_huggingface`) — sempre foi assim, uma vez por execução, não por busca. Para os
+irmãos lerem o nome do modelo nas configurações sem pagar isso (e sem quebrar o
+`openapi_analysis`, onde o pacote é opcional), o modelo, a dimensão e o prefixo foram
+para `qdrant_3gpp_rag/embedding_config.py`, que não importa nada pesado, e o `__init__`
+passou a carregar cada nome só no primeiro uso. `from qdrant_3gpp_rag.embedding_config
+import DEFAULT_EMBEDDING_MODEL`: 0,01 s, sem torch. Os nomes exportados não mudaram.

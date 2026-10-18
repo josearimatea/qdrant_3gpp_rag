@@ -17,6 +17,13 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import QdrantClient
 
+from qdrant_3gpp_rag.embedding_config import (  # noqa: F401  (re-exported)
+    DEFAULT_EMBEDDING_DIM,
+    DEFAULT_EMBEDDING_MODEL,
+    QUERY_PREFIXES,
+    default_device,
+)
+
 logger = logging.getLogger(__name__)
 
 # Sentinel for get_vector_store(sparse_vector_name=...): read the collection's own
@@ -27,26 +34,6 @@ AUTO = "auto"
 DEFAULT_QDRANT_HOST = "localhost"
 DEFAULT_QDRANT_PORT = 6333
 DEFAULT_QDRANT_TIMEOUT = 120
-# The ONE embedding model of the 3GPP corpus and of every sibling repository: a query
-# must be embedded by the same model as the chunks it is compared with (768 != 384
-# dimensions). Siblings import these instead of pinning their own.
-# bge-base-en-v1.5 replaces all-MiniLM-L6-v2: it reads 512 tokens (MiniLM read ~256
-# and ignored the rest of a chunk) and is strong on technical English.
-DEFAULT_EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
-DEFAULT_EMBEDDING_DIM = 768
-# Instruction the model was trained to see before a QUERY (never before a passage).
-QUERY_PREFIXES = {
-    "BAAI/bge-base-en-v1.5": "Represent this sentence for searching relevant passages: ",
-}
-
-
-def default_device() -> str:
-    """'cuda' when a GPU is available, else 'cpu'."""
-    import torch
-
-    return "cuda" if torch.cuda.is_available() else "cpu"
-
-
 DEFAULT_DEVICE = default_device()
 DEFAULT_VECTOR_NAME = "text-dense"
 DEFAULT_SPARSE_VECTOR_NAME = "text-sparse"
