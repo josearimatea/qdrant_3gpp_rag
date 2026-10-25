@@ -316,9 +316,12 @@ def index_segments(
     if dry_run:
         return len(to_add)
 
+    # A collection left with indexing off is a bulk load that was interrupted
+    # (indexing is switched back on only at its end): resume it as a bulk load.
+    bulk = (exists and not recreate and client.get_collection(collection_name)
+            .config.optimizer_config.indexing_threshold == 0)
     if recreate and exists:
         client.delete_collection(collection_name)
-    created = False
     if not client.collection_exists(collection_name):
         client.create_collection(
             collection_name=collection_name,
@@ -332,7 +335,7 @@ def index_segments(
             # below, when indexing is switched back on.
             optimizers_config=OptimizersConfigDiff(indexing_threshold=0),
         )
-        created = True
+        bulk = True
         for name in KEYWORD_INDEXED_FIELDS:
             client.create_payload_index(collection_name, field_name=f"metadata.{name}",
                                         field_schema=PayloadSchemaType.KEYWORD)
@@ -355,7 +358,7 @@ def index_segments(
             client.delete(collection_name,
                           points_selector=PointIdsList(points=stale[i:i + DELETE_BATCH_SIZE]))
     finally:
-        if created:                    # build the HNSW index once, now
+        if bulk:                       # build the HNSW index once, now
             client.update_collection(collection_name, optimizers_config=OptimizersConfigDiff(
                 indexing_threshold=DEFAULT_INDEXING_THRESHOLD))
 

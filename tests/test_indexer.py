@@ -204,6 +204,24 @@ class TestIncrementalIndexing:
         f.get_vector_store.return_value.add_texts.assert_not_called()
         assert f.client.delete.call_args.kwargs["points_selector"].points == [old]
 
+    def test_an_interrupted_bulk_load_is_resumed_and_its_index_switched_back_on(self):
+        ids, _ = self._ids()
+        f = self._factory(existing_ids=[ids[0]])
+        f.client.get_collection.return_value.config.optimizer_config.indexing_threshold = 0
+        n = index_segments(self.SEGS, factory=f, collection_name="c", chunk_size=None,
+                           recreate=False)
+        assert n == 1                                       # only the missing chunk
+        restored = f.client.update_collection.call_args.kwargs["optimizers_config"]
+        assert restored.indexing_threshold == 10000
+
+    def test_a_normal_sync_leaves_the_index_settings_alone(self):
+        ids, _ = self._ids()
+        f = self._factory(existing_ids=[ids[0]])
+        f.client.get_collection.return_value.config.optimizer_config.indexing_threshold = 10000
+        index_segments(self.SEGS, factory=f, collection_name="c", chunk_size=None,
+                       recreate=False)
+        f.client.update_collection.assert_not_called()
+
     def test_dry_run_changes_nothing(self):
         f = self._factory(existing_ids=[])
         n = index_segments(self.SEGS, factory=f, collection_name="c", chunk_size=None,
