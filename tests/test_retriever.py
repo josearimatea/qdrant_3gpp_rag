@@ -29,6 +29,85 @@ class TestToQdrantFilter:
     def test_all_empty_returns_none(self):
         assert _to_qdrant_filter({"a": None, "b": ""}) is None
 
+    def test_only_filters_has_no_must_not(self):
+        qf = _to_qdrant_filter({"spec": "28532-i00"})
+        assert [c.key for c in qf.must] == ["metadata.spec"] and qf.must_not is None
+
+    def test_only_exclude(self):
+        qf = _to_qdrant_filter({}, exclude=[{"spec_number": "28532", "annex": True}])
+        assert qf.must is None and len(qf.must_not) == 1
+        group = qf.must_not[0]
+        assert {(c.key, c.match.value) for c in group.must} == {
+            ("metadata.spec_number", "28532"), ("metadata.annex", True)}
+
+    def test_filters_and_exclude_together(self):
+        qf = _to_qdrant_filter({"defines": "NotificationHeader"},
+                               exclude=[{"spec_number": "28532", "annex": True},
+                                        {"spec": "28623-i40"}])
+        assert [c.key for c in qf.must] == ["metadata.defines"]
+        assert [len(g.must) for g in qf.must_not] == [2, 1]      # one nested filter per group
+
+    def test_empty_values_and_empty_groups_in_exclude_are_ignored(self):
+        qf = _to_qdrant_filter({}, exclude=[{"spec_number": "28532", "annex": None},
+                                            {"spec": "", "clause": None}])
+        assert len(qf.must_not) == 1
+        assert [c.key for c in qf.must_not[0].must] == ["metadata.spec_number"]
+        assert _to_qdrant_filter({}, exclude=[{"spec": ""}]) is None
+
+    def test_false_is_a_value_not_an_empty_one(self):
+        qf = _to_qdrant_filter({"annex": False})
+        assert qf.must[0].match.value is False
+
+
+def _store(docs=()):
+    factory, vs = MagicMock(), MagicMock()
+    factory.get_vector_store.return_value = vs
+    vs.similarity_search.return_value = list(docs)
+    return factory, vs
+
+
+EXCLUDE = [{"spec_number": "28532", "annex": True}]
+
+
+class TestRetrieveWithExclude:
+
+    def test_manual_filters_and_exclude_go_in_the_same_filter(self):
+        factory, vs = _store()
+        result = retrieve("q", factory=factory, collection_name="c",
+                          filters={"defines": "NotificationHeader"}, exclude=EXCLUDE)
+        qf = vs.similarity_search.call_args.kwargs["filter"]
+        assert [c.key for c in qf.must] == ["metadata.defines"] and len(qf.must_not) == 1
+        assert "Manual filters" in result.generated_filter and "Excluded" in result.generated_filter
+
+    def test_plain_search_gets_only_the_must_not(self):
+        factory, vs = _store()
+        result = retrieve("q", factory=factory, collection_name="c", exclude=EXCLUDE)
+        qf = vs.similarity_search.call_args.kwargs["filter"]
+        assert qf.must is None and len(qf.must_not) == 1
+        assert result.generated_filter.startswith("Excluded")
+
+    def test_self_query_adds_inferred_filters_to_the_exclusion(self):
+        factory, vs = _store()
+        parsed = MagicMock()
+        parsed.model_dump.return_value = {"query": "header fields", "spec_number": "28623"}
+        llm = MagicMock()
+        llm.with_structured_output.return_value.invoke.return_value = parsed
+        retrieve("header fields in 28623", factory=factory, collection_name="c", llm=llm,
+                 exclude=EXCLUDE)
+        qf = vs.similarity_search.call_args.kwargs["filter"]
+        assert [c.key for c in qf.must] == ["metadata.spec_number"] and len(qf.must_not) == 1
+
+    def test_without_exclude_nothing_changes(self):
+        factory, vs = _store()
+        result = retrieve("q", factory=factory, collection_name="c")
+        assert vs.similarity_search.call_args.kwargs["filter"] is None
+        assert result.generated_filter == "No filter applied"
+
+    def test_get_relevant_documents_passes_exclude_through(self):
+        factory, vs = _store([Document(page_content="x", metadata={})])
+        get_relevant_documents("q", factory=factory, collection_name="c", exclude=EXCLUDE)
+        assert len(vs.similarity_search.call_args.kwargs["filter"].must_not) == 1
+
 
 class TestRetrieve:
 

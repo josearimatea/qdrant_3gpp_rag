@@ -396,3 +396,44 @@ sem filtro algum também traz a C.4.2a em 1º — o que o `openapi_analysis` tin
 
 **Testes:** 90 → 92. Coleções temporárias deixadas por uma execução do rulesbank
 (`rules_tmp_633f68456633`, `spec_tmp_0eb39241a1fd`) não foram tocadas.
+
+Commit: `b529cb2`.
+
+---
+
+## 25/out/2026 — exclusão opcional na busca (`retrieve(exclude=...)`)
+
+**Por quê.** O rulesbank gera o YAML de uma spec a partir do texto dela; o anexo dessa
+spec é o YAML pronto e não pode entrar na busca, mas os anexos das outras specs sim (o
+`NotificationHeader` vem do Annex C da 28.623). O pacote continua genérico: quem diz o que
+excluir é o chamador.
+
+**O que mudou.** `retrieve(..., exclude=[{...}, ...])`: cada item é um grupo de condições
+(mesmo formato de `filters`, chaves resolvidas para `metadata.<chave>`) que valem juntas;
+cada grupo vira um `must_not` com um `Filter(must=[...])` aninhado — um pedaço sai se
+satisfizer todas as condições de algum grupo. Valores vazios são ignorados, e grupo vazio
+também. Vale nos três modos (filtro manual: `must` + `must_not` no mesmo filtro;
+self-query: soma-se aos filtros inferidos, nunca é inferido nem descartado; sem filtro:
+só o `must_not`) e nos dois ramos da busca híbrida (o `langchain_qdrant` passa o mesmo
+filtro aos dois `Prefetch`). Repassado por `get_relevant_documents`/`get_relevant_chunks`;
+aparece no `generated_filter` ("Excluded: ...") e no log "Starting retrieval". Sem
+`exclude`, nada muda.
+
+**Verificado no Qdrant local (`3gpp_rel18_all`, sem LLM):** com
+`exclude=[{"spec_number": "28532", "annex": True}]`, a contagem de pedaços do anexo da
+28.532 cai a 0 e a do anexo da 28.623 continua > 0; a busca "NotificationHeader
+notificationId eventTime systemDN" (k=20) não traz nada do anexo da 28.532 e traz pedaços
+do anexo da 28.623.
+
+**Achado: a fusão RRF não é determinística.** Duas buscas híbridas idênticas podem
+devolver os mesmos pedaços em ordem diferente — e, quando o empate cai no corte do `k`, um
+pedaço diferente no último lugar. O vetor da pergunta é idêntico entre chamadas, e as
+buscas densa e BM25 sozinhas são estáveis (5 de 5 repetições); quem varia é o RRF: um
+pedaço em 3º numa lista e ausente na outra empata exatamente com outro na situação
+inversa, e o Qdrant desempata em ordem arbitrária. Afeta a reprodutibilidade dos
+experimentos (não a qualidade). Não corrigido; uma correção seria pedir mais que `k` a
+cada ramo e desempatar no cliente por (pontuação, id).
+
+**Testes:** 92 → 105 (8 de `_to_qdrant_filter`/modos com `exclude`, 3 contra o Qdrant
+local, pulados sem ele; o de "sem exclude, nada muda" compara no modo só denso, pelo
+achado acima).

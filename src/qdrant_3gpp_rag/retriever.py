@@ -71,21 +71,38 @@ def _build_filter_model(
 _METADATA_PAYLOAD_KEY = "metadata"
 
 
-def _to_qdrant_filter(filters: Dict[str, Any]) -> Optional[Filter]:
+def _payload_key(key: str) -> str:
+    return key if key.startswith(_METADATA_PAYLOAD_KEY + ".") else f"{_METADATA_PAYLOAD_KEY}.{key}"
+
+
+def _conditions(group: Dict[str, Any]) -> List[FieldCondition]:
+    """Exact-match conditions for a flat {key: value} dict, empty values ignored."""
+    return [
+        FieldCondition(key=_payload_key(key), match=MatchValue(value=value))
+        for key, value in group.items()
+        if value not in (None, "")
+    ]
+
+
+def _to_qdrant_filter(
+    filters: Dict[str, Any],
+    exclude: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Filter]:
     """Build a Qdrant Filter from a flat {key: value} dict, ignoring empty values.
 
     Keys are resolved against the nested metadata payload (e.g. "mns" ->
     "metadata.mns"), matching how langchain_qdrant stores document metadata.
-    """
-    def _payload_key(key: str) -> str:
-        return key if key.startswith(_METADATA_PAYLOAD_KEY + ".") else f"{_METADATA_PAYLOAD_KEY}.{key}"
 
-    conditions = [
-        FieldCondition(key=_payload_key(key), match=MatchValue(value=value))
-        for key, value in filters.items()
-        if value not in (None, "")
-    ]
-    return Filter(must=conditions) if conditions else None
+    exclude: groups of conditions, each in the same format as `filters`; a chunk
+    matching ALL the conditions of ANY group is left out (one nested must_not per
+    group). {"spec_number": "28532", "annex": True} drops that spec's annexes and
+    keeps every other spec's. A group left empty by its empty values is ignored.
+    """
+    must = _conditions(filters or {})
+    must_not = [Filter(must=conds) for conds in map(_conditions, exclude or []) if conds]
+    if not must and not must_not:
+        return None
+    return Filter(must=must or None, must_not=must_not or None)
 
 
 def build_self_query_filters(
@@ -134,6 +151,7 @@ def retrieve(
     metadata_field_info: Optional[Sequence] = None,
     document_content_description: Optional[str] = None,
     sparse_vector_name: Optional[str] = AUTO,
+    exclude: Optional[List[Dict[str, Any]]] = None,
 ) -> RetrievalResult:
     """Core retrieval function.
 
@@ -156,11 +174,17 @@ def retrieve(
         sparse_vector_name: AUTO (default) searches hybrid — dense + BM25, fused
             by RRF — when the collection holds the sparse vector, dense-only
             otherwise; None forces dense-only.
+        exclude: groups of metadata conditions to leave out, e.g.
+            [{"spec_number": "28532", "annex": True}]: a chunk matching every
+            condition of a group is excluded. Applied in all three modes (with
+            self-query it is added to the inferred filters, never inferred nor
+            dropped) and to both legs of a hybrid search.
 
     Returns:
         RetrievalResult with docs, generated_query, and generated_filter.
     """
-    logger.info("Starting retrieval | query=%r | k=%d | filters=%s", query, k, filters)
+    logger.info("Starting retrieval | query=%r | k=%d | filters=%s | exclude=%s",
+                query, k, filters, exclude)
 
     vector_store = factory.get_vector_store(
         collection_name, sparse_vector_name=sparse_vector_name
@@ -187,9 +211,11 @@ def retrieve(
         applied_filters = {}
         filter_desc = "No filter applied"
 
-    docs = vector_store.similarity_search(
-        query=search_query, k=k, filter=_to_qdrant_filter(applied_filters)
-    )
+    qdrant_filter = _to_qdrant_filter(applied_filters, exclude)
+    if qdrant_filter is not None and qdrant_filter.must_not:
+        filter_desc = (f"{'' if filter_desc == 'No filter applied' else filter_desc + ' | '}"
+                       f"Excluded: {exclude}")
+    docs = vector_store.similarity_search(query=search_query, k=k, filter=qdrant_filter)
 
     result = RetrievalResult(
         docs=docs,
@@ -212,11 +238,13 @@ def get_relevant_documents(
     filters: Optional[Dict[str, Any]] = None,
     formatter: Callable[[Document], str] = format_document,
     sparse_vector_name: Optional[str] = AUTO,
+    exclude: Optional[List[Dict[str, Any]]] = None,
 ) -> List[str]:
     """Retrieve + format as strings ready for prompt injection."""
     result = retrieve(
         query, factory=factory, collection_name=collection_name,
         llm=llm, k=k, filters=filters, sparse_vector_name=sparse_vector_name,
+        exclude=exclude,
     )
     formatted = [formatter(doc) for doc in result.docs]
     logger.info("get_relevant_documents -> formatted %d strings", len(formatted))
