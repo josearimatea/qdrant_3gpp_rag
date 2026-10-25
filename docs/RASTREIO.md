@@ -437,3 +437,10 @@ cada ramo e desempatar no cliente por (pontuação, id).
 **Testes:** 92 → 105 (8 de `_to_qdrant_filter`/modos com `exclude`, 3 contra o Qdrant
 local, pulados sem ele; o de "sem exclude, nada muda" compara no modo só denso, pelo
 achado acima).
+
+Commit: `a9ed903`.
+
+**Recorte exportado (25/out).** `chunk_spec_sections` passou a ser exportado pelo pacote
+(`from qdrant_3gpp_rag import chunk_spec_sections`), para o rulesbank indexar a spec que
+processa no mesmo formato do corpus (`sections-v3`). Importá-lo carrega o torch (~6 s), por
+causa do `langchain_text_splitters`. Testes: 105 → 106.

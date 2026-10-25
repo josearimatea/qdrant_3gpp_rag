@@ -329,3 +329,10 @@ def test_every_bare_define_in_the_corpus_has_the_shape_of_a_code_name():
                 if bare and (" " in name or not _CODE_SHAPE.search(name)):
                     bad.append((doc["spec"], sec.title))
     assert total > 1000 and not bad, bad[:20]
+
+
+def test_chunk_spec_sections_is_exported_by_the_package():
+    import qdrant_3gpp_rag
+
+    assert "chunk_spec_sections" in qdrant_3gpp_rag.__all__
+    assert qdrant_3gpp_rag.chunk_spec_sections is chunk_spec_sections
