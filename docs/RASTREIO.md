@@ -363,3 +363,36 @@ e o sumário.
 
 **Testes:** 78 → 90. As coleções ainda são as de antes (sem anexos, IDs aleatórios); a
 próxima reindexação as recria uma última vez — depois, só o que mudar.
+
+Commit: `40e8c45`.
+
+---
+
+## 25/out/2026 — as quatro coleções reindexadas com anexos e IDs fixos
+
+Da menor para a maior, cada uma validada logo depois (GPU, fp16):
+
+| coleção | pedaços | tempo |
+|---|---|---|
+| `3gpp_rel18_28_28532` | 701 (96 em anexo) | 18 s |
+| `openapi_reference` (pelo rulesbank, factory deste pacote) | 159 (eram 151, montados por um caminho antigo) | 12 s |
+| `3gpp_rel18_28` | 7.639 (1.543 em anexo) | 66 s |
+| `3gpp_rel18_all` | 294.073 | ~68 min (em duas partes, ver abaixo) |
+
+A `openapi_reference` era a última coleção ainda no MiniLM (384): agora bge (768) + BM25.
+
+**Interrupção e retomada.** O PC reiniciou com a `3gpp_rel18_all` pela metade (147.968
+pontos gravados). Com os IDs fixos, `--no-recreate` gravou só os 146.105 que faltavam (32
+min), sem refazer o resto. A carga interrompida tinha deixado o índice HNSW desligado
+(`indexing_threshold=0`, religado só no fim de uma carga); a sincronização agora percebe
+isso e religa no fim (commit `327842c`). Os 294.344 pedaços do chunker viram 294.073 IDs:
+271 pedaços idênticos (mesmo texto e metadados) não entram mais duplicados.
+
+**Validação** (`3gpp_rel18_28` e `3gpp_rel18_all`, filtros `spec=28532-i00`,
+`annex=false`): POST 1º com `4xx/5xx`; `NotifyThresholdCrossing` 3º e direto por
+`defines`; HTTP GET 1º; `defines=notifyEvent` → 11.1.1.10.1/.2. **`defines=NotificationHeader`
+→ `28623-i40` C.4.2a (anexo)**, e "NotificationHeader notificationId eventTime systemDN"
+sem filtro algum também traz a C.4.2a em 1º — o que o `openapi_analysis` tinha perdido.
+
+**Testes:** 90 → 92. Coleções temporárias deixadas por uma execução do rulesbank
+(`rules_tmp_633f68456633`, `spec_tmp_0eb39241a1fd`) não foram tocadas.

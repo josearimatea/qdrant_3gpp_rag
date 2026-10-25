@@ -29,9 +29,11 @@ Fonte do corpus: `workspace/../Dataset/TSpec-LLM/3GPP-clean` (`config.paths.DOCS
 
 ## 1. Regras que valem para tudo
 
-- **Nenhum anexo**, nunca: nem no índice, nem como evidência (anexos trazem os
-  documentos OpenAPI/ASN.1 prontos — o gabarito — e o histórico de mudanças). O
-  chunker já corta a partir do primeiro título "Annex X"; manter.
+- ~~**Nenhum anexo**, nunca~~ — **revogado em 25/out/2026** (ver `docs/RASTREIO.md`): os
+  anexos guardam definições que outras specs referenciam (o `NotificationHeader` só existe
+  no Annex C da TS 28.623). Este pacote indexa **tudo**, cada pedaço marcado com `annex`;
+  que anexos uma tarefa pode ler (ex.: não ler o OpenAPI pronto da spec que se está
+  gerando ou julgando) é decisão de cada repositório consumidor.
 - Código, comentários e prompts em inglês; documentos em português.
 - Commits com `[TAG]` no assunto (`[FEAT]`, `[FIX]`, `[TEST]`, `[DOCS]`), **sem**
   linha `Co-Authored-By`. Push só quando o usuário pedir.
