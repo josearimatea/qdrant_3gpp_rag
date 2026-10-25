@@ -25,6 +25,10 @@ pre-configured relative path, for example:
     python -c "from qdrant_3gpp_rag.config.paths import DOCS_DIR; print(DOCS_DIR)"
 
 Omit --release/--series to index everything under --docs-dir.
+
+Incremental (only what changed; each chunk's point id comes from its content):
+    python scripts/index_3gpp_all.py ... --no-recreate --prune --dry-run   # report
+    python scripts/index_3gpp_all.py ... --no-recreate --prune             # apply
 """
 
 import argparse
@@ -70,7 +74,11 @@ def main() -> None:
     parser.add_argument("--force-chunks", action="store_true",
                         help="Rebuild chunk cache even if it already exists.")
     parser.add_argument("--no-recreate", action="store_true",
-                        help="Add to an existing collection instead of dropping it first.")
+                        help="Keep the collection and embed only the chunks not yet in it.")
+    parser.add_argument("--prune", action="store_true",
+                        help="With --no-recreate, also delete the points no longer produced.")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Only report what would be added / kept / deleted.")
     args = parser.parse_args()
 
     try:
@@ -87,8 +95,11 @@ def main() -> None:
             output_dir=args.output_dir,
             force_chunk_rebuild=args.force_chunks,
             recreate=not args.no_recreate,
+            prune=args.prune,
+            dry_run=args.dry_run,
         )
-        print(f"Indexed {n} chunk(s) into collection '{args.collection}'.")
+        verb = "Would write" if args.dry_run else "Wrote"
+        print(f"{verb} {n} chunk(s) into collection '{args.collection}'.")
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)

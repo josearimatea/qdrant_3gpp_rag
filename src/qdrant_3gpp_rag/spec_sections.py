@@ -18,12 +18,14 @@ lost the title that said what it was about. Here the unit is the clause:
     so a "POST" clause says which resource it is the method of;
   - only a section longer than `max_chars` is divided — first one YAML type
     definition per part (annex OpenAPI documents), then by paragraph — and every
-    part repeats the section's heading and parents, marked "(part i/n)";
-  - NO ANNEX: everything from the first "Annex X" heading on is left out. A 3GPP
-    spec's annexes hold its finished OpenAPI / ASN.1 documents and its change
-    history; indexed, they let a search "read the spec" and find the very document
-    being generated or judged. The cover page (the text before the first heading)
-    is left out too;
+    part repeats the section's heading and parents, marked "(part i/n)"; a part
+    holding one YAML type defines it ("NotificationHeader:" -> NotificationHeader);
+  - everything is indexed, annexes included, every chunk marked annex=True/False: a
+    3GPP spec's annexes hold its finished OpenAPI / YANG / ASN.1 documents, which
+    other specs' documents reference (TS 28.532's YAML takes NotificationHeader from
+    TS 28.623 Annex C, its only definition). Which annexes a task may read is the
+    consumer's decision (filter on annex / spec), not this package's. Left out: the
+    cover page (the text before the first heading) and the contents listing;
   - each chunk carries its clause, title and parent path, so a consumer can filter
     or group by clause, plus:
       clause_ancestors — the clause and all its prefixes ("12", "12.3", ...), so an
@@ -58,7 +60,7 @@ SECTION_MAX_CHARS = 4000
 SECTION_OVERLAP = 200
 # How many parent titles a chunk starts with.
 PARENTS_IN_TEXT = 2
-CHUNKING = "sections-v2"           # recorded on every chunk: how it was cut
+CHUNKING = "sections-v3"           # recorded on every chunk: how it was cut
 # Upper bound of a chunk's `mentions` list (first occurrences kept).
 MAX_MENTIONS = 30
 
@@ -216,18 +218,25 @@ def _prefix(sec: Section) -> str:
     return (" › ".join(near) + "\n\n") if near else ""
 
 
-def _pieces(body: str, room: int, overlap: int) -> List[str]:
+def _pieces(body: str, room: int, overlap: int) -> List[tuple]:
     """A long body divided: one YAML type definition per piece when it holds several,
-    then by paragraph; never larger than `room`."""
+    then by paragraph; never larger than `room`. Each piece comes with the YAML type
+    it holds (every piece of a type split further keeps its name), or None."""
     starts = [m.start() for m in _YAML_TYPE_DEF.finditer(body)]
     units = ([body[a:b].strip() for a, b in zip([0] + starts[1:], starts[1:] + [len(body)])]
              if len(starts) >= 2 else [body])
     splitter = RecursiveCharacterTextSplitter(chunk_size=max(room, 200), chunk_overlap=overlap,
                                               separators=["\n\n", "\n", " ", ""])
-    out: List[str] = []
+    out: List[tuple] = []
     for unit in units:
-        out.extend([unit] if len(unit) <= room else splitter.split_text(unit))
-    return [p for p in out if p.strip()]
+        head = _YAML_TYPE_DEF.match(unit) if len(starts) >= 2 else None
+        name = head.group(0).rstrip().rstrip(":") if head else None
+        if name and not _CODE_SHAPE.search(name):
+            name = None                 # "Example:", "Uri:" — not distinctive enough
+        for piece in ([unit] if len(unit) <= room else splitter.split_text(unit)):
+            if piece.strip():
+                out.append((piece, name))
+    return out
 
 
 def chunk_spec_sections(
@@ -236,38 +245,41 @@ def chunk_spec_sections(
     *,
     max_chars: int = SECTION_MAX_CHARS,
     overlap: int = SECTION_OVERLAP,
-    include_annexes: bool = False,
+    include_annexes: bool = True,
 ) -> List[Dict[str, Any]]:
     """Segments ready for index_segments(..., chunk_size=None): one per section (or
     per part of a long one), text under "text", plus the given metadata and
     clause / clause_ancestors / title / path / defines / mentions / annex / part /
-    parts / chunking. Annexes and the cover page are left out unless
-    include_annexes=True."""
+    parts / chunking. The cover page and the contents listing are left out; the
+    annexes too when include_annexes=False."""
     base = dict(metadata or {})
-    kept: List[tuple] = []                       # (section, its own names, [(text, body)])
+    kept: List[tuple] = []        # (section, [(text, body, names defined by the part)])
     for sec in split_sections(text):
         if not sec.body or sec.title.lower() == "contents":
             continue                    # a parent heading only, or the contents listing
-        if not include_annexes and (sec.annex or sec.title == "(front matter)"):
-            continue                    # an annex, or the cover page
+        if sec.title == "(front matter)" or (sec.annex and not include_annexes):
+            continue                    # the cover page, or an annex when not wanted
         prefix = _prefix(sec)
         whole = f"{prefix}{sec.heading}\n\n{sec.body}".strip() if sec.heading else sec.body
+        own = defines_of(sec.title) or sec.parent_defines
         if len(whole) <= max_chars:
-            parts = [(whole, sec.body)]
+            parts = [(whole, sec.body, own)]
         else:
             room = max_chars - len(prefix) - len(sec.heading) - 20
             bodies = _pieces(sec.body, room, overlap)
             n = len(bodies)
             parts = [(f"{prefix}{sec.heading} (part {i}/{n})\n\n{b}".strip() if sec.heading
-                      else b, b) for i, b in enumerate(bodies, 1)]
-        kept.append((sec, defines_of(sec.title) or sec.parent_defines, parts))
+                      else b, b, [name] if name else own)
+                     for i, (b, name) in enumerate(bodies, 1)]
+        kept.append((sec, parts))
 
     # Mentions need the whole spec's definitions first; only the body is searched (the
     # parents' titles in the prefix are context, not citations).
-    pattern = _mention_pattern({name for _, own, _ in kept for name in own})
+    pattern = _mention_pattern({name for _, parts in kept for *_, names in parts
+                                for name in names})
     segments: List[Dict[str, Any]] = []
-    for sec, own, parts in kept:
-        for i, (part, body) in enumerate(parts, 1):
+    for sec, parts in kept:
+        for i, (part, body, own) in enumerate(parts, 1):
             segments.append({**base, "text": part, "clause": sec.clause,
                              "clause_ancestors": clause_ancestors(sec.clause),
                              "title": sec.title,

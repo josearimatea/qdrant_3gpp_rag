@@ -34,7 +34,15 @@ DEFAULT_METADATA_FIELD_INFO = [
     ),
     AttributeInfo(
         name="spec",
-        description="Specification name (e.g., '28532')",
+        description=(
+            "Specification file name with version (e.g., '28532-i00'). Prefer "
+            "spec_number unless a version is asked for"
+        ),
+        type="string",
+    ),
+    AttributeInfo(
+        name="spec_number",
+        description="Specification number, any version (e.g., '28532', '29571', '38101-1')",
         type="string",
     ),
     AttributeInfo(

@@ -14,9 +14,12 @@ Usage:
     drop_collection(factory, "spec_tmp_123")
 """
 
+import hashlib
+import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Optional, Set
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from qdrant_client.http.models import (
@@ -24,6 +27,7 @@ from qdrant_client.http.models import (
     Modifier,
     OptimizersConfigDiff,
     PayloadSchemaType,
+    PointIdsList,
     SparseVectorParams,
     VectorParams,
 )
@@ -46,10 +50,13 @@ DEFAULT_CHUNK_OVERLAP = 200
 # filters on them (retriever._to_qdrant_filter) stay fast on a large collection.
 # langchain_qdrant stores metadata under the "metadata" payload key. A list field
 # (clause_ancestors, defines, mentions) matches when any element equals the value.
-KEYWORD_INDEXED_FIELDS = ("spec", "clause", "clause_ancestors", "defines", "mentions")
+KEYWORD_INDEXED_FIELDS = ("spec", "spec_number", "clause", "clause_ancestors", "defines",
+                          "mentions")
+BOOL_INDEXED_FIELDS = ("annex",)
 # index_segments: texts per embedding/upsert call, and the server's default
 # indexing threshold (KB), restored after a bulk load.
 ADD_BATCH_SIZE = 512
+DELETE_BATCH_SIZE = 1000
 DEFAULT_INDEXING_THRESHOLD = 10000
 
 # Markdown headers used to split structured documents before size-based chunking.
@@ -201,6 +208,29 @@ def index_document(
     return len(chunks)
 
 
+def _point_id(content_hash: str) -> str:
+    """A Qdrant point id derived from the chunk's content (a UUID from its hash)."""
+    return str(uuid.UUID(content_hash[:32]))
+
+
+def _content_hash(text: str, metadata: Dict[str, Any]) -> str:
+    """sha256 of the chunk's text and metadata: equal only for an identical chunk."""
+    blob = json.dumps({"text": text, "metadata": metadata}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _existing_ids(client: Any, collection_name: str) -> Set[str]:
+    """Every point id in a collection (ids only, no payload or vectors)."""
+    ids: Set[str] = set()
+    offset = None
+    while True:
+        points, offset = client.scroll(collection_name, limit=10000, offset=offset,
+                                       with_payload=False, with_vectors=False)
+        ids.update(str(p.id) for p in points)
+        if offset is None:
+            return ids
+
+
 def index_segments(
     segments: List[Dict[str, Any]],
     *,
@@ -212,6 +242,8 @@ def index_segments(
     embedding_dim: int = DEFAULT_EMBEDDING_DIM,
     recreate: bool = True,
     hybrid: bool = True,
+    prune: bool = False,
+    dry_run: bool = False,
 ) -> int:
     """Chunk and index a list of segments, each carrying its own metadata.
 
@@ -220,21 +252,32 @@ def index_segments(
     of the segment it came from (plus chunk_index). This enables metadata-filtered
     retrieval, such as restricting search to one service or stage.
 
+    Every chunk gets a content_hash (sha256 of its text and metadata) and a point id
+    derived from it, so the collection itself tells what is already indexed: with
+    recreate=False only the chunks not yet there are embedded and written (a re-run
+    writes nothing), and prune=True also deletes the points no longer produced
+    (chunks of a changed section, of a removed spec). dry_run=True only logs the
+    plan — to add / already indexed / stale — and writes nothing.
+
     Args:
         segments: list of dicts. Each must hold the chunkable text under
             ``text_key``; all other keys become that segment's chunk metadata.
         factory: QdrantFactory instance.
         collection_name: target collection.
         text_key: key in each segment holding the text (default "text").
-        chunk_size, chunk_overlap, embedding_dim, recreate: as in index_document.
+        chunk_size, chunk_overlap, embedding_dim: as in index_document.
             chunk_size=None indexes each segment as ONE chunk — for segments already
             cut (spec_sections.chunk_spec_sections: one per section).
+        recreate: drop the collection first and index everything (default).
         hybrid: create the collection with a BM25 sparse vector ("text-sparse",
             IDF applied by Qdrant) besides the dense one, and write both;
             retrieval then fuses the two rankings (factory.get_vector_store).
+        prune: with recreate=False, delete the points the segments no longer produce
+            (use it when `segments` is the collection's whole content).
+        dry_run: log what would change and return, writing nothing.
 
     Returns:
-        Total number of chunks indexed across all segments.
+        Number of chunks written (or, with dry_run, that would be written).
 
     Raises:
         ValueError: If segments is empty or yields no chunk.
@@ -242,29 +285,38 @@ def index_segments(
     if not segments:
         raise ValueError("Cannot index an empty segment list.")
 
-    all_chunks: List[str] = []
-    all_metadatas: List[Dict[str, Any]] = []
+    chunks: Dict[str, tuple] = {}                 # point id -> (text, metadata)
     for seg in segments:
         text = (seg.get(text_key) or "").strip()
         if not text:
             continue
         base = {k: v for k, v in seg.items() if k != text_key}
-        chunks = ([text] if chunk_size is None else
+        pieces = ([text] if chunk_size is None else
                   chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap))
-        for i, chunk in enumerate(chunks):
-            all_chunks.append(chunk)
-            all_metadatas.append({**base, "chunk_index": i})
+        for i, piece in enumerate(pieces):
+            metadata = {**base, "chunk_index": i}
+            content_hash = _content_hash(piece, metadata)
+            chunks.setdefault(_point_id(content_hash),
+                              (piece, {**metadata, "content_hash": content_hash}))
 
-    if not all_chunks:
+    if not chunks:
         raise ValueError("Segments produced no indexable text.")
 
-    logger.info(
-        "Chunked %d segment(s) into %d chunk(s) for '%s'.",
-        len(segments), len(all_chunks), collection_name,
-    )
-
     client = factory.client
-    if recreate and client.collection_exists(collection_name):
+    exists = client.collection_exists(collection_name)
+    existing = _existing_ids(client, collection_name) if exists and not recreate else set()
+    to_add = [pid for pid in chunks if pid not in existing]
+    stale = sorted(existing - set(chunks)) if prune else []
+    logger.info(
+        "'%s': %d segment(s) -> %d chunk(s): %d to add, %d already indexed, %d stale%s%s.",
+        collection_name, len(segments), len(chunks), len(to_add), len(chunks) - len(to_add),
+        len(existing - set(chunks)), " (to delete)" if prune else " (kept)",
+        " — recreating the collection" if recreate and exists else "",
+    )
+    if dry_run:
+        return len(to_add)
+
+    if recreate and exists:
         client.delete_collection(collection_name)
     created = False
     if not client.collection_exists(collection_name):
@@ -284,6 +336,9 @@ def index_segments(
         for name in KEYWORD_INDEXED_FIELDS:
             client.create_payload_index(collection_name, field_name=f"metadata.{name}",
                                         field_schema=PayloadSchemaType.KEYWORD)
+        for name in BOOL_INDEXED_FIELDS:
+            client.create_payload_index(collection_name, field_name=f"metadata.{name}",
+                                        field_schema=PayloadSchemaType.BOOL)
         logger.info("Created collection '%s' (dim=%d, hybrid=%s).",
                     collection_name, embedding_dim, hybrid)
 
@@ -291,17 +346,23 @@ def index_segments(
     # dense-only collection with recreate=False stays dense-only).
     vector_store = factory.get_vector_store(collection_name, sparse_vector_name=AUTO)
     try:
-        # Large calls let the model sort texts by length (less padding per batch).
-        vector_store.add_texts(texts=all_chunks, metadatas=all_metadatas,
-                               batch_size=ADD_BATCH_SIZE)
+        if to_add:
+            # Large calls let the model sort texts by length (less padding per batch).
+            vector_store.add_texts(texts=[chunks[pid][0] for pid in to_add],
+                                   metadatas=[chunks[pid][1] for pid in to_add],
+                                   ids=to_add, batch_size=ADD_BATCH_SIZE)
+        for i in range(0, len(stale), DELETE_BATCH_SIZE):
+            client.delete(collection_name,
+                          points_selector=PointIdsList(points=stale[i:i + DELETE_BATCH_SIZE]))
     finally:
         if created:                    # build the HNSW index once, now
             client.update_collection(collection_name, optimizers_config=OptimizersConfigDiff(
                 indexing_threshold=DEFAULT_INDEXING_THRESHOLD))
 
     total = client.count(collection_name).count
-    logger.info("Indexing complete — %d vector(s) in '%s'.", total, collection_name)
-    return len(all_chunks)
+    logger.info("Indexing complete — %d written, %d deleted, %d vector(s) in '%s'.",
+                len(to_add), len(stale), total, collection_name)
+    return len(to_add)
 
 
 def drop_collection(factory: QdrantFactory, collection_name: str) -> bool:

@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 
 from qdrant_3gpp_rag.factory import DEFAULT_DEVICE, QdrantFactory
 from qdrant_3gpp_rag.indexer import index_segments
-from qdrant_3gpp_rag.spec_sections import chunk_spec_sections
+from qdrant_3gpp_rag.spec_sections import CHUNKING, chunk_spec_sections
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,23 @@ logger = logging.getLogger(__name__)
 GPP_CHUNK_SIZE = 4000
 GPP_CHUNK_OVERLAP = 200
 _ATTRS = re.compile(r"[ \t]*\{#[^}\n]*\}[ \t]*$", re.MULTILINE)
+# A spec file stem: number (dot optional, part suffix kept) and version, then any
+# split suffix — "28532-i00", "38101-1-i30_s00-05", "22261-ib0", "22.890-050(cl)".
+_SPEC_STEM = re.compile(r"^(?P<number>\d{2}\.?\d{3}(?:-\d+)?)-(?P<version>[a-z0-9]{3})(?![a-z0-9])")
+# A document named after the spec it belongs to, with no version ("36.521-1 8.3.1.1.4 TT",
+# a test tolerance analysis in the 36 series).
+_SPEC_PREFIX = re.compile(r"^(?P<number>\d{2}\.?\d{3}(?:-\d+)?)(?=[ _])")
+
+
+def spec_identity(stem: str) -> Dict[str, str]:
+    """spec_number ("28541", "38101-1") and version ("i50") of a file stem; version ""
+    for a document named after its spec without one, both "" for a name with no spec
+    number ("10.2 TT")."""
+    m = _SPEC_STEM.match(stem)
+    if m:
+        return {"spec_number": m.group("number").replace(".", ""), "version": m.group("version")}
+    m = _SPEC_PREFIX.match(stem)
+    return {"spec_number": m.group("number").replace(".", "") if m else "", "version": ""}
 
 
 def _clean_markdown(content: str) -> str:
@@ -67,7 +84,7 @@ def load_3gpp_specs(
         series: optional whitelist of series folder names (e.g. ["28_series"]).
 
     Returns:
-        One dict per spec: {release, series, spec, processed_text}.
+        One dict per spec: {release, series, spec, file, processed_text}.
     """
     data: List[Dict[str, str]] = []
     for release in sorted(os.listdir(directory)):
@@ -87,6 +104,7 @@ def load_3gpp_specs(
                     "release": release,
                     "series": ser,
                     "spec": file[:-3],
+                    "file": f"{release}/{ser}/{file}",
                     "processed_text": _clean_markdown(content),
                 })
     logger.info("Loaded %d spec file(s) from '%s'.", len(data), directory)
@@ -94,11 +112,14 @@ def load_3gpp_specs(
 
 
 def build_3gpp_segments(specs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-    """Chunk loaded specs by section (spec_sections.chunk_spec_sections), keeping
-    release/series/spec on every chunk."""
+    """Chunk loaded specs by section (spec_sections.chunk_spec_sections), keeping on
+    every chunk where it comes from: release / series / spec (the file stem, as
+    consumers filter on it) / spec_number and version (one spec split over several
+    files shares its spec_number) / file (path under the corpus root)."""
     segments: List[Dict[str, Any]] = []
     for doc in specs:
-        base = {"release": doc["release"], "series": doc["series"], "spec": doc["spec"]}
+        base = {"release": doc["release"], "series": doc["series"], "spec": doc["spec"],
+                **spec_identity(doc["spec"]), "file": doc.get("file", "")}
         segments.extend(chunk_spec_sections(doc["processed_text"], base,
                                             max_chars=GPP_CHUNK_SIZE,
                                             overlap=GPP_CHUNK_OVERLAP))
@@ -148,6 +169,8 @@ def index_3gpp_all(
     output_dir: str = "output",
     force_chunk_rebuild: bool = False,
     recreate: bool = True,
+    prune: bool = False,
+    dry_run: bool = False,
 ) -> int:
     """Load, chunk, and index all 3GPP specs under a directory into Qdrant.
 
@@ -164,11 +187,15 @@ def index_3gpp_all(
         releases / series: optional folder whitelists (e.g. ["Rel-18"]).
         specs: optional spec file stems (e.g. ["28532-i00"]).
         output_dir: directory where chunk cache is stored.
-        force_chunk_rebuild: ignore existing cache and rebuild chunks.
-        recreate: drop and rebuild the collection if it already exists.
+        force_chunk_rebuild: ignore existing cache and rebuild chunks (a cache cut by
+            another chunking version is rebuilt anyway).
+        recreate: drop and rebuild the collection if it already exists. With
+            recreate=False only the chunks not yet in the collection are embedded.
+        prune: with recreate=False, also delete the points no longer produced.
+        dry_run: only log what would be added / kept / deleted.
 
     Returns:
-        Number of chunks indexed.
+        Number of chunks written (or that would be, with dry_run).
     """
     factory = factory or QdrantFactory.get_instance(
         host=qdrant_host,
@@ -177,10 +204,16 @@ def index_3gpp_all(
     )
 
     cache_path = _chunk_cache_path(collection_name, output_dir)
+    segments: List[Dict[str, Any]] = []
     if os.path.exists(cache_path) and not force_chunk_rebuild:
         segments = _load_segments_cache(cache_path)
-        logger.info("Loaded %d chunk segment(s) from cache '%s'.", len(segments), cache_path)
-    else:
+        if segments and segments[0].get("chunking") != CHUNKING:
+            logger.info("Cache '%s' was cut by %s, not %s — rebuilding.",
+                        cache_path, segments[0].get("chunking"), CHUNKING)
+            segments = []
+        else:
+            logger.info("Loaded %d chunk segment(s) from cache '%s'.", len(segments), cache_path)
+    if not segments:
         loaded = load_3gpp_specs(directory, releases=releases, series=series, specs=specs)
         if not loaded:
             raise ValueError(f"No .md specs found under '{directory}' for the given filters.")
@@ -194,4 +227,6 @@ def index_3gpp_all(
         collection_name=collection_name,
         chunk_size=None,                    # already one chunk per section (or part)
         recreate=recreate,
+        prune=prune,
+        dry_run=dry_run,
     )

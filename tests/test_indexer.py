@@ -125,8 +125,9 @@ class TestIndexSegments:
         assert list(sparse) == ["text-sparse"] and sparse["text-sparse"].modifier == "idf"
         factory.get_vector_store.assert_called_once_with("c", sparse_vector_name="auto")
         indexed = {c.kwargs["field_name"] for c in factory.client.create_payload_index.call_args_list}
-        assert indexed == {"metadata.spec", "metadata.clause", "metadata.clause_ancestors",
-                           "metadata.defines", "metadata.mentions"}
+        assert indexed == {"metadata.spec", "metadata.spec_number", "metadata.clause",
+                           "metadata.clause_ancestors", "metadata.defines",
+                           "metadata.mentions", "metadata.annex"}
         _, kwargs = vs.add_texts.call_args
         assert kwargs["metadatas"][0]["clause_ancestors"] == ["12", "12.3"]
         assert kwargs["batch_size"] == 512
@@ -153,6 +154,64 @@ class TestIndexSegments:
         index_segments([{"text": "x"}], factory=factory, collection_name="c",
                        chunk_size=None, hybrid=False)
         assert factory.client.create_collection.call_args.kwargs["sparse_vectors_config"] is None
+
+
+class TestIncrementalIndexing:
+    """Point ids come from the chunk's content: the collection tells what is indexed."""
+
+    SEGS = [{"text": "section one", "spec": "28532-i00"},
+            {"text": "section two", "spec": "28532-i00"}]
+
+    def _factory(self, existing_ids=(), exists=True):
+        from types import SimpleNamespace
+
+        factory = MagicMock()
+        factory.client.collection_exists.return_value = exists
+        factory.client.scroll.return_value = (
+            [SimpleNamespace(id=i) for i in existing_ids], None)
+        factory.client.count.return_value = MagicMock(count=len(existing_ids))
+        return factory
+
+    def _ids(self):
+        f = self._factory(exists=False)
+        index_segments(self.SEGS, factory=f, collection_name="c", chunk_size=None)
+        kwargs = f.get_vector_store.return_value.add_texts.call_args.kwargs
+        return kwargs["ids"], kwargs["metadatas"]
+
+    def test_the_same_chunk_always_gets_the_same_id_and_a_content_hash(self):
+        ids1, metas = self._ids()
+        ids2, _ = self._ids()
+        assert ids1 == ids2 and len(set(ids1)) == 2
+        assert all(len(m["content_hash"]) == 64 for m in metas)
+
+    def test_a_sync_writes_only_the_missing_chunks(self):
+        ids, _ = self._ids()
+        f = self._factory(existing_ids=[ids[0]])
+        n = index_segments(self.SEGS, factory=f, collection_name="c", chunk_size=None,
+                           recreate=False)
+        assert n == 1
+        assert f.get_vector_store.return_value.add_texts.call_args.kwargs["ids"] == [ids[1]]
+        f.client.delete_collection.assert_not_called()
+        f.client.delete.assert_not_called()                 # stale points kept by default
+
+    def test_a_rerun_writes_nothing_and_prune_deletes_what_is_gone(self):
+        ids, _ = self._ids()
+        old = "00000000-0000-0000-0000-000000000001"
+        f = self._factory(existing_ids=[*ids, old])
+        n = index_segments(self.SEGS, factory=f, collection_name="c", chunk_size=None,
+                           recreate=False, prune=True)
+        assert n == 0
+        f.get_vector_store.return_value.add_texts.assert_not_called()
+        assert f.client.delete.call_args.kwargs["points_selector"].points == [old]
+
+    def test_dry_run_changes_nothing(self):
+        f = self._factory(existing_ids=[])
+        n = index_segments(self.SEGS, factory=f, collection_name="c", chunk_size=None,
+                           recreate=False, dry_run=True)
+        assert n == 2
+        f.client.create_collection.assert_not_called()
+        f.get_vector_store.assert_not_called()
+        f.client.delete.assert_not_called()
 
 
 class TestDropCollection:

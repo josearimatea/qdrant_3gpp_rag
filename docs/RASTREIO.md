@@ -313,3 +313,53 @@ As coleções `3gpp_rel18_28_28532` e `3gpp_rel18_28` foram indexadas em fp32; a
 na GPU agora vai em fp16 (diferença de cosseno ≤ 0,0005, sem efeito prático).
 
 **Testes:** 77 → 79. Falta: `openapi_reference`.
+
+Commit: `c27b58a`. Correção de contagem: nas duas entradas anteriores, "Testes: 76 → 77" e
+"77 → 79" deveriam ser 75 → 76 e 76 → 78.
+
+---
+
+## 25/out/2026 — anexos voltam ao índice; IDs fixos e indexação incremental
+
+**Por quê.** O `openapi_analysis` notou que a TS 28.623 tinha só 7 pedaços e que o
+`NotificationHeader` sumira do corpus. O diagnóstico recebido (títulos de 8 `#` não
+reconhecidos) estava errado: o chunker aceita de 1 a 9 `#`, e esses títulos eram os dos
+**anexos**. A 28.623 é 97% anexo, e os tipos comuns (`NotificationHeader`, `SystemDN`
+…) só existem no Annex C dela, como YAML — que o YAML da 28.532 referencia por
+`$ref: TS28623_ComDefs.yaml#/...`. Em nenhuma das 920 specs eles aparecem fora de anexo.
+A regra "nenhum anexo" cortava justamente a dependência. 56 das 920 specs têm mais da
+metade do texto em anexos (28.541, 28.623, 29.522 …).
+
+**Decisão (do usuário).** Este pacote é genérico — vale para outras releases — e indexa
+**tudo**, anexos inclusive (o "Change history" também). Que anexos uma tarefa pode ler
+(ex.: não ler o OpenAPI pronto da spec que se está gerando) é decisão de cada consumidor,
+nos testes de cada repositório, com os metadados `annex` e `spec`. Ficam de fora só a capa
+e o sumário.
+
+**O que mudou (`chunking="sections-v3"`).**
+- Anexos indexados, cada pedaço com `annex` true/false.
+- Um pedaço que contém um tipo YAML define esse tipo (`NotificationHeader:` →
+  `defines=[NotificationHeader]`), com a mesma regra de forma de código (`Uri:`,
+  `Example:` não); todas as partes de um tipo longo mantêm o nome. Os `mentions` passam
+  a enxergar esses nomes (um texto normal que cita `NotificationHeader` aponta para o
+  anexo da 28.623).
+- Origem do pedaço: além de `release`, `series`, `spec` (nome do arquivo), agora
+  `spec_number` (`28541`, `38101-1` — igual para os vários arquivos de uma spec),
+  `version` (`i50`) e `file` (`Rel-18/28_series/28541-i50_AnnexesA_D.md`). Documentos de
+  teste da série 36 cujo nome não diz a spec ficam com os dois primeiros vazios.
+- **IDs fixos e `content_hash`.** Cada pedaço guarda o sha256 do texto + metadados, e o ID
+  do ponto no Qdrant vem dele. O próprio banco diz o que já está indexado, sem manifesto à
+  parte. `index_segments(recreate=False)` grava só o que falta; `prune=True` apaga o que
+  deixou de existir; `dry_run=True` só informa (a adicionar / já indexados / a apagar).
+  No script: `--no-recreate --prune [--dry-run]`.
+- O cache de pedaços (`output/*.chunks.jsonl.gz`) se refaz sozinho quando foi cortado por
+  outra versão do chunking.
+- Índices de payload novos: `spec_number` (keyword) e `annex` (bool). Self-query: campo
+  `spec_number`.
+
+**Medido (Rel-18, sem gravar).** Pedaços: `3gpp_rel18_28_28532` 605 → 701 (96 em anexo);
+`3gpp_rel18_28` 6.096 → 7.639 (1.543); `3gpp_rel18_all` 248.233 → 294.344 (46.111).
+`NotificationHeader` → TS 28.623, C.4.2a.
+
+**Testes:** 78 → 90. As coleções ainda são as de antes (sem anexos, IDs aleatórios); a
+próxima reindexação as recria uma última vez — depois, só o que mudar.

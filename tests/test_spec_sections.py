@@ -83,17 +83,57 @@ def test_parent_headings_and_contents_are_not_chunks():
     assert not any(s["title"] == "Contents" for s in chunk_spec_sections(SPEC))
 
 
-def test_annexes_and_the_cover_page_are_left_out():
+def test_annexes_are_indexed_and_marked_the_cover_page_is_not():
     segs = _by_clause(chunk_spec_sections(SPEC))
-    assert "A.1" not in segs and "A" not in segs
-    assert not any("openapi: 3.0.1" in s["text"] for s in segs.values())
+    assert segs["A.1"]["annex"] is True and "openapi: 3.0.1" in segs["A.1"]["text"]
+    assert segs["12.3.1.2.4"]["annex"] is False and segs["1"]["annex"] is False
     assert not any(s["title"] == "(front matter)" for s in segs.values())
-    assert segs["12.3.1.2.4"]["annex"] is False                      # the text before stays
 
 
-def test_annexes_can_be_asked_for_and_are_marked():
-    segs = _by_clause(chunk_spec_sections(SPEC, include_annexes=True))
-    assert segs["A.1"]["annex"] is True and segs["1"]["annex"] is False
+def test_annexes_can_be_left_out():
+    segs = _by_clause(chunk_spec_sections(SPEC, include_annexes=False))
+    assert "A.1" not in segs and not any(s["annex"] for s in segs.values())
+
+
+ANNEX_SPEC = """# 5 Scope
+
+Uses NotificationHeader from the common definitions.
+
+# Annex C (normative): OpenAPI definitions
+
+## C.1 TS28623_ComDefs.yaml
+
+""" + "\n\n".join(f"""{name}:
+
+type: object
+
+properties:
+
+""" + "\n\n".join(f"  field{i}: string" for i in range(60)) for name in
+    ("NotificationHeader", "SystemDN", "Uri")) + """
+
+# Annex E (informative): Change history
+
+| Date | Meeting | CR | Subject |
+| 2019-12 | SA#86 | 0076 | Add notifyEvent |
+"""
+
+
+def test_yaml_types_in_an_annex_define_themselves_and_every_annex_is_kept():
+    segs = chunk_spec_sections(ANNEX_SPEC, max_chars=1200)
+    by_def = {}
+    for seg in segs:
+        for d in seg["defines"]:
+            by_def.setdefault(d, []).append(seg)
+    hdr = by_def["NotificationHeader"]                 # a long type: every part keeps its name
+    assert all(p["annex"] for p in hdr)
+    assert hdr[0]["text"].count("NotificationHeader:") == 1
+    by_def = {d: parts[0] for d, parts in by_def.items()}
+    assert by_def["SystemDN"]["clause"] == "C.1"
+    assert "Uri" not in by_def                       # not code-shaped: no define
+    assert any("SA#86" in s["text"] and s["annex"] for s in segs)    # change history too
+    scope = [s for s in segs if s["clause"] == "5"][0]
+    assert "NotificationHeader" in scope["mentions"]  # normative text -> annex type
 
 
 def test_a_long_section_is_divided_and_each_part_keeps_its_heading():
@@ -234,6 +274,20 @@ DATASET = os.path.join(os.path.dirname(__file__), "..", "..", "..", "Dataset", "
                        "3GPP-clean", "Rel-18", "28_series", "28532-i00.md")
 
 
+COMDEFS = os.path.join(os.path.dirname(DATASET), "28623-i40.md")
+
+
+@pytest.mark.skipif(not os.path.exists(COMDEFS), reason="TSpec-LLM dataset not present")
+def test_the_common_types_of_ts_28623_are_reachable_by_defines():
+    from qdrant_3gpp_rag.index_3gpp_all import _clean_markdown
+
+    with open(COMDEFS, encoding="utf-8") as f:
+        segs = chunk_spec_sections(_clean_markdown(f.read()))
+    hdr = [s for s in segs if "NotificationHeader" in s["defines"]]
+    assert hdr and all(s["annex"] for s in hdr)
+    assert "systemDN" in hdr[0]["text"] and "eventTime" in hdr[0]["text"]
+
+
 @pytest.mark.skipif(not os.path.exists(DATASET), reason="TSpec-LLM dataset not present")
 def test_the_real_spec_keeps_its_tables_with_their_clause():
     from qdrant_3gpp_rag.index_3gpp_all import _clean_markdown
@@ -245,8 +299,9 @@ def test_the_real_spec_keeps_its_tables_with_their_clause():
     assert "4xx/5xx" in by["12.3.1.2.3.2.1.3.1"]["text"]                 # POST /notificationSink
     t = by["12.3.1.2.4.2.1"]["text"]                                    # Type NotifyThresholdCrossing
     assert "hysteresis" in t and "monitorGranularityPeriod" in t
-    assert not any(s["annex"] for s in segs)                            # no annex at all
-    assert not any("openapi:" in s["text"] for s in segs)
+    assert not any("openapi:" in s["text"] for s in segs if not s["annex"])
+    assert any(s["annex"] for s in segs)                                # annexes indexed
+    assert any("change history" in s["path"].lower() for s in segs)
     assert len(split_sections(text)) > 600
     assert by["12.3.1.2.4.2.1"]["defines"] == ["NotifyThresholdCrossing"]
     assert "NotifyThresholdCrossing" in by["12.3.1.2.3.2.1.3.1"]["mentions"]  # POST -> its body type

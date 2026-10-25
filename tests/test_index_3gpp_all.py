@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 from qdrant_3gpp_rag.index_3gpp_all import (
     _clean_markdown,
     build_3gpp_segments,
@@ -63,6 +65,7 @@ class TestBuild3gppSegments:
     def test_segments_carry_metadata(self):
         specs = [{
             "release": "Rel-18", "series": "28_series", "spec": "28532-i00",
+            "file": "Rel-18/28_series/28532-i00.md",
             "processed_text": "# 1 Scope\n" + ("word " * 400),
         }]
         segments = build_3gpp_segments(specs)
@@ -72,4 +75,20 @@ class TestBuild3gppSegments:
             assert seg["series"] == "28_series"
             assert seg["spec"] == "28532-i00"
             assert seg["text"].strip()
-            assert seg["clause"] == "1" and seg["chunking"] == "sections-v2"
+            assert seg["clause"] == "1" and seg["chunking"] == "sections-v3"
+            assert seg["spec_number"] == "28532" and seg["version"] == "i00"
+            assert seg["file"] == "Rel-18/28_series/28532-i00.md"
+
+
+@pytest.mark.parametrize("stem, number, version", [
+    ("28532-i00", "28532", "i00"),
+    ("38101-1-i30_s00-05", "38101-1", "i30"),      # one spec split over several files
+    ("28541-i50_AnnexesA_D", "28541", "i50"),
+    ("22.890-050(cl)", "22890", "050"),
+    ("36.521-1 8.3.1.1.4 TT", "36521-1", ""),      # named after its spec, no version
+    ("10.2 TT", "", ""),
+])
+def test_spec_identity(stem, number, version):
+    from qdrant_3gpp_rag.index_3gpp_all import spec_identity
+
+    assert spec_identity(stem) == {"spec_number": number, "version": version}
