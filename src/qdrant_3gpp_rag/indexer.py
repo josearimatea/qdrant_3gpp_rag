@@ -22,6 +22,7 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 from qdrant_client.http.models import (
     Distance,
     Modifier,
+    OptimizersConfigDiff,
     PayloadSchemaType,
     SparseVectorParams,
     VectorParams,
@@ -46,6 +47,10 @@ DEFAULT_CHUNK_OVERLAP = 200
 # langchain_qdrant stores metadata under the "metadata" payload key. A list field
 # (clause_ancestors, defines, mentions) matches when any element equals the value.
 KEYWORD_INDEXED_FIELDS = ("spec", "clause", "clause_ancestors", "defines", "mentions")
+# index_segments: texts per embedding/upsert call, and the server's default
+# indexing threshold (KB), restored after a bulk load.
+ADD_BATCH_SIZE = 512
+DEFAULT_INDEXING_THRESHOLD = 10000
 
 # Markdown headers used to split structured documents before size-based chunking.
 _DEFAULT_HEADERS_TO_SPLIT_ON = [("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")]
@@ -261,6 +266,7 @@ def index_segments(
     client = factory.client
     if recreate and client.collection_exists(collection_name):
         client.delete_collection(collection_name)
+    created = False
     if not client.collection_exists(collection_name):
         client.create_collection(
             collection_name=collection_name,
@@ -270,7 +276,11 @@ def index_segments(
             sparse_vectors_config=(
                 {DEFAULT_SPARSE_VECTOR_NAME: SparseVectorParams(modifier=Modifier.IDF)}
                 if hybrid else None),
+            # Bulk load: no HNSW index while the points arrive; it is built once,
+            # below, when indexing is switched back on.
+            optimizers_config=OptimizersConfigDiff(indexing_threshold=0),
         )
+        created = True
         for name in KEYWORD_INDEXED_FIELDS:
             client.create_payload_index(collection_name, field_name=f"metadata.{name}",
                                         field_schema=PayloadSchemaType.KEYWORD)
@@ -280,7 +290,14 @@ def index_segments(
     # AUTO: writes both vectors when the collection has the sparse one (a kept,
     # dense-only collection with recreate=False stays dense-only).
     vector_store = factory.get_vector_store(collection_name, sparse_vector_name=AUTO)
-    vector_store.add_texts(texts=all_chunks, metadatas=all_metadatas)
+    try:
+        # Large calls let the model sort texts by length (less padding per batch).
+        vector_store.add_texts(texts=all_chunks, metadatas=all_metadatas,
+                               batch_size=ADD_BATCH_SIZE)
+    finally:
+        if created:                    # build the HNSW index once, now
+            client.update_collection(collection_name, optimizers_config=OptimizersConfigDiff(
+                indexing_threshold=DEFAULT_INDEXING_THRESHOLD))
 
     total = client.count(collection_name).count
     logger.info("Indexing complete — %d vector(s) in '%s'.", total, collection_name)

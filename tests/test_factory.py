@@ -110,6 +110,18 @@ class TestBuildEmbeddings:
         }
 
     @patch("qdrant_3gpp_rag.factory.HuggingFaceEmbeddings")
+    def test_half_precision_on_the_gpu_only(self, mock_emb):
+        import torch
+
+        from qdrant_3gpp_rag.factory import build_embeddings
+
+        build_embeddings(device="cuda")
+        assert mock_emb.call_args.kwargs["model_kwargs"] == {
+            "device": "cuda", "model_kwargs": {"torch_dtype": torch.float16}}
+        build_embeddings(device="cpu")
+        assert mock_emb.call_args.kwargs["model_kwargs"] == {"device": "cpu"}
+
+    @patch("qdrant_3gpp_rag.factory.HuggingFaceEmbeddings")
     def test_a_model_without_a_known_prefix_gets_none(self, mock_emb):
         from qdrant_3gpp_rag.factory import build_embeddings
 

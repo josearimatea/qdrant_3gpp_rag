@@ -129,6 +129,21 @@ class TestIndexSegments:
                            "metadata.defines", "metadata.mentions"}
         _, kwargs = vs.add_texts.call_args
         assert kwargs["metadatas"][0]["clause_ancestors"] == ["12", "12.3"]
+        assert kwargs["batch_size"] == 512
+
+    def test_a_new_collection_is_bulk_loaded_and_indexed_once_at_the_end(self):
+        factory = MagicMock()
+        factory.client.collection_exists.return_value = False
+        factory.client.count.return_value = MagicMock(count=1)
+        factory.get_vector_store.return_value.add_texts.side_effect = RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            index_segments([{"text": "x"}], factory=factory, collection_name="c", chunk_size=None)
+
+        created = factory.client.create_collection.call_args.kwargs["optimizers_config"]
+        assert created.indexing_threshold == 0                      # no HNSW while loading
+        restored = factory.client.update_collection.call_args.kwargs["optimizers_config"]
+        assert restored.indexing_threshold == 10000                 # back on, even after a failure
 
 
     def test_hybrid_false_creates_a_dense_only_collection(self):

@@ -274,3 +274,42 @@ herdados: "Input parameters", "URI", "Description", "Definition", métodos HTTP,
 | `NotifyEvent`, escopo 12.1 | não existe tipo `NotifyEvent` na 28.532; `defines=notifyEvent` traz 11.1.1.10.1 e 11.1.1.10.2 |
 
 **Testes:** 76 → 77.
+
+Commit: `d2cd9ee`.
+
+---
+
+## 18–20/out/2026 — `3gpp_rel18_28` e `3gpp_rel18_all` reindexadas; indexação 8x mais rápida (plano 2.4)
+
+**`3gpp_rel18_28`** (GPU, 178 s): 6.096 pedaços de 41 arquivos. Casos da 2.5 (filtro
+`spec=28532-i00`) iguais aos da coleção só da 28.532; o "HTTP GET" curto traz a parte com
+a tabela `4xx/5xx` em 5º (o BM25 dá menos peso a "GET" num corpus maior), e em 1º para
+uma pergunta que fala de respostas.
+
+**`3gpp_rel18_all`, 1ª tentativa — parada.** 248.233 pedaços (920 specs). Rodou a ~10,5
+pedaços/s: previsão de 6–7 h. Parada com 98 mil pedaços. Motivo da lentidão em relação ao
+MiniLM: o bge-base tem o dobro de camadas, o dobro de largura e lê o dobro de texto
+(512 tokens) — ~10x mais cálculo por pedaço.
+
+**Medido numa amostra de 2.000 pedaços da release** (RTX 3050 Ti): modelo em fp32 32,5
+pedaços/s; em fp16 118,9/s (3,6x), com vetores praticamente iguais (cosseno mínimo
+0,9995; os 10 vizinhos mais próximos idênticos em 93% das sondas). BM25: 2.700/s;
+gravação no Qdrant: ~1.500/s. Como o ritmo real (10,5/s) ficava muito abaixo do modelo
+sozinho, a hipótese foi o Qdrant reorganizando o índice HNSW enquanto a coleção crescia.
+
+**Mudanças:** `build_embeddings` usa fp16 na GPU (CPU continua fp32);
+`index_segments` grava em lotes de 512 (o modelo ordena por tamanho dentro de cada lote,
+menos enchimento) e cria a coleção com `indexing_threshold=0` (sem HNSW durante a carga),
+religando o padrão do servidor (10.000) no fim — mesmo se a carga falhar.
+
+**`3gpp_rel18_all`, 2ª tentativa:** 248.233 pedaços em 81 min (~51/s em média; ~90/s
+nos primeiros 10 min), índice dos dois vetores montado (496.466 = 2 × 248.233). Casos da
+2.5 (filtro `spec=28532-i00`): POST 1º com `4xx/5xx`; `NotifyThresholdCrossing` 3º e
+direto por `defines`; HTTP GET 1º (e 1º com a tabela, perguntando por respostas);
+`defines=notifyEvent` → 11.1.1.10.1/.2. **Sem** filtro de spec, entre as 920 specs,
+"NotifyThresholdCrossing type attributes hysteresis" traz a definição da 28.532 em 1º.
+
+As coleções `3gpp_rel18_28_28532` e `3gpp_rel18_28` foram indexadas em fp32; a pergunta
+na GPU agora vai em fp16 (diferença de cosseno ≤ 0,0005, sem efeito prático).
+
+**Testes:** 77 → 79. Falta: `openapi_reference`.
