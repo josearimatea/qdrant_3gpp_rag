@@ -483,3 +483,47 @@ HTTP. Primeiro uso real da indexação incremental: 613 pedaços recalculados em
 ~302 mil.
 
 **Testes:** 106 → 109.
+
+Commit: `8f98ab9`.
+
+---
+
+## 25/out/2026 — recorte genérico de markdown pela árvore de títulos (`openapi_reference`)
+
+**Por quê.** A `openapi_reference` era recortada por `chunk_markdown_by_headers` (1.000
+caracteres, só em `#`/`##`/`###`): 159 pedaços, nenhum com o caminho de títulos, 9 abaixo
+de 300 caracteres (o menor com 40), textos começando no meio (`"url":
+"https://example.com"`). A estrutura varia por versão — na 3.0.1 um objeto é `####`, na
+3.2.0 é `###` —, então nível fixo não serve.
+
+**O que mudou** (commit `ba2d5a3`; rulesbank `ad39f75`). `chunk_markdown_tree`
+(neste pacote, ao lado do `chunk_spec_sections`, reaproveitando `split_sections` e a
+divisão por parágrafo): seção que cabe (com tudo abaixo dela) → um pedaço; que não cabe →
+corta nos títulos filhos, cada filho do mesmo jeito; pedaço abaixo de 300 caracteres →
+junta a um irmão (mesmo pai), nunca fica sozinho; seção sem filhos ainda grande →
+divide por parágrafo, "(part i/n)". Todo pedaço começa com o caminho de títulos e leva
+`title`, `path`, `part`, `parts`; um pedaço juntado fica sob o caminho que as partes têm
+em comum (nunca sob uma delas). Limite máximo: o mesmo do corpus (4.000). Linhas `#`
+dentro de blocos de código (7 na 3.0.1, 4 na 3.2.0) não contam como título — opção do
+`split_sections`, desligada para o corpus 3GPP, cujo índice não muda. No rulesbank, o
+`chunk_document` passou a usá-lo, com `openapi_version` no metadado.
+
+**Medido** (posição em que aparece o objeto nomeado, 5 primeiros):
+
+| | antes (3.0.1) | depois (3.0.1) | 3.2.0 (coleção temporária, apagada) |
+|---|---|---|---|
+| pedaços | 159 | 73 | 178 |
+| menor | 40 (9 < 300) | 433 (0 < 300) | 360 (0 < 300) |
+| com caminho de títulos | 0 | 73 | 178 |
+| objeto certo em 1º, nas 5 buscas | 0 de 5 | 5 de 5 | 4 de 5 |
+
+Buscas: "Parameter Object in path query", "Reference Object $ref", "Schema Object
+composition allOf oneOf anyOf", "Callback Object runtime expression", "Responses Object
+status codes default". Na 3.2.0, a de composição traz em 1º o *Discriminator Object* (que
+trata justamente de `allOf`/`oneOf`/`anyOf`) e o Schema Object em 2º. Dois pedaços passam
+de 4.000 (4.032 na 3.0.1, 4.245 na 3.2.0): a introdução curta de um objeto juntada ao
+único irmão — "nunca sozinho" vence o máximo.
+
+Reindexada **só** a `openapi_reference` (73 pedaços, 2 s).
+
+**Testes:** 109 → 115.
