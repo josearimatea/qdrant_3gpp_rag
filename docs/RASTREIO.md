@@ -444,3 +444,42 @@ Commit: `a9ed903`.
 (`from qdrant_3gpp_rag import chunk_spec_sections`), para o rulesbank indexar a spec que
 processa no mesmo formato do corpus (`sections-v3`). Importá-lo carrega o torch (~6 s), por
 causa do `langchain_text_splitters`. Testes: 105 → 106.
+
+Commit: `58a7d4d`.
+
+---
+
+## 25/out/2026 — tipos YAML confirmados pela própria spec; atualização incremental
+
+**Investigação.** Na TS 28.623 (Annex C, `TS28623_ComDefs.yaml`), `Dn`, `Filter`, `Uri` e
+`Float` ficavam sem `defines`, embora cada um estivesse numa parte própria (`Uri: / type:
+string`). Causas: (1) o nome era descartado pela regra de "forma de código", que existe
+porque a conversão para markdown perdeu a indentação do YAML — um tipo de topo (`Uri:`) e
+uma chave aninhada (o cabeçalho HTTP `Location:` em `responses → headers`) ficam iguais no
+texto; soltar a regra pela forma daria `defines` a 588 partes, as campeãs `Location` (136)
+e `ETag` (83), que não são tipos. (2) O **primeiro** tipo de cada documento YAML divide a
+parte com o cabeçalho do documento (`openapi: 3.0.1 … components: schemas:`) e a linha do
+tipo era procurada só no início da parte — nunca era reconhecido (o `Float` é o primeiro da
+28.623).
+
+**Correção** (commit `819314e`). Um nome que não tem forma de código também conta quando o
+YAML da própria spec (somando os arquivos dela) o referencia como tipo:
+`#/components/schemas/<nome>`. A 28.623 referencia `Dn`, `Filter`, `Uri` e `Float`;
+`Location` e `ETag` nunca aparecem assim no corpus. A linha do tipo passou a ser procurada
+em qualquer posição da parte. Texto e numeração das partes não mudam — só o `defines`.
+
+**Atualização incremental** (`--force-chunks --no-recreate --prune`), sem reindexar:
+
+| coleção | regravados (e apagadas as versões antigas) | tempo |
+|---|---|---|
+| `3gpp_rel18_28_28532` | 27 de 701 | 9 s |
+| `3gpp_rel18_28` | 130 de 7.639 | 11 s |
+| `3gpp_rel18_all` | 456 de 294.073 | 33 s (+4 min de recorte) |
+
+Depois: `defines` `Uri` 3, `Dn` 1, `Filter` 1, `Float` 2, `NotificationHeader` 1, `ETag` 0.
+`Location` 13 — conferidos: vêm de títulos `Resource: Location` (TS 24.545, 29.503, 29.505,
+com os filhos herdando) e `Type: Location` (TS 33.128), já existentes; nenhum cabeçalho
+HTTP. Primeiro uso real da indexação incremental: 613 pedaços recalculados em vez de
+~302 mil.
+
+**Testes:** 106 → 109.
