@@ -40,6 +40,7 @@ _EXPORTS = {
     "get_relevant_documents": "retriever",
     "retrieve": "retriever",
     "chunk_spec_sections": "spec_sections",
+    "chunk_markdown_tree": "spec_sections",
     "DEFAULT_DOCUMENT_CONTENT_DESCRIPTION": "self_query",
     "DEFAULT_METADATA_FIELD_INFO": "self_query",
 }

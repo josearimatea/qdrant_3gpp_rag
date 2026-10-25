@@ -165,14 +165,29 @@ def mentions_in(text: str, pattern: Optional[re.Pattern], own: List[str],
     return found
 
 
-def _headings(text: str) -> List[tuple]:
-    """(start, end, level, title) of every heading, in document order."""
+_FENCE = re.compile(r"^[ \t]*(```|~~~)[^\n]*$", re.MULTILINE)
+
+
+def _fenced_spans(text: str) -> List[tuple]:
+    """(start, end) of every fenced code block (``` or ~~~), unclosed ones to the end."""
+    marks = [m.start() for m in _FENCE.finditer(text)]
+    if len(marks) % 2:
+        marks.append(len(text))
+    return list(zip(marks[0::2], marks[1::2]))
+
+
+def _headings(text: str, skip_code_fences: bool = False) -> List[tuple]:
+    """(start, end, level, title) of every heading, in document order. With
+    skip_code_fences, a "# comment" line inside a fenced code block is not one."""
     found = [(m.start(), m.end(), len(m.group(1)), m.group("title")) for m in _ATX.finditer(text)]
     for m in _SETEXT.finditer(text):
         line = m.group("title").strip()
         if line.startswith(("#", ">", "-", "*", "|")) or not re.search(r"[A-Za-z0-9]", line):
             continue                                   # not a heading: a list, quote, rule
         found.append((m.start(), m.end(), 1 if m.group("rule")[0] == "=" else 2, line))
+    if skip_code_fences:
+        spans = _fenced_spans(text)
+        found = [h for h in found if not any(a <= h[0] < b for a, b in spans)]
     found.sort()
     out, last_end = [], -1
     for start, end, level, title in found:
@@ -188,11 +203,12 @@ def _is_parent(parent: Section, child_clause: str, child_level: int) -> bool:
     return parent.level < child_level
 
 
-def split_sections(text: str) -> List[Section]:
+def split_sections(text: str, skip_code_fences: bool = False) -> List[Section]:
     """Every section of a spec, in order, each knowing its parents and whether it is
     in an annex. The text before the first heading is a section titled
-    '(front matter)'."""
-    heads = _headings(text)
+    '(front matter)'. skip_code_fences: see _headings (off for the 3GPP corpus,
+    whose index was built without it)."""
+    heads = _headings(text, skip_code_fences)
     sections: List[Section] = []
     if heads and text[:heads[0][0]].strip():
         sections.append(Section(clause="", title="(front matter)", heading="",
@@ -303,4 +319,141 @@ def chunk_spec_sections(
                              "defines": list(own), "mentions": mentions_in(body, pattern, own),
                              "annex": sec.annex, "part": i, "parts": len(parts),
                              "chunking": CHUNKING})
+    return segments
+
+
+# --- Generic markdown documents: cut along the document's own heading tree ----------
+
+# A piece shorter than this is merged into a neighbour under the same parent.
+TREE_MIN_CHARS = 300
+TREE_CHUNKING = "markdown-tree-v1"
+
+
+@dataclass
+class _Node:
+    sec: Section
+    children: List["_Node"] = field(default_factory=list)
+
+    def own(self) -> str:
+        return f"{self.sec.heading}\n\n{self.sec.body}".strip() if self.sec.heading else self.sec.body
+
+    def whole(self) -> str:
+        return "\n\n".join(t for t in [self.own(), *(c.whole() for c in self.children)] if t)
+
+
+def _tree(sections: List[Section]) -> List[_Node]:
+    """The heading tree, rebuilt with split_sections' own parent rule."""
+    roots: List[_Node] = []
+    stack: List[_Node] = []
+    for sec in sections:
+        node = _Node(sec)
+        while stack and not _is_parent(stack[-1].sec, sec.clause, sec.level):
+            stack.pop()
+        (stack[-1].children if stack else roots).append(node)
+        stack.append(node)
+    return roots
+
+
+def _common(trails: List[List[str]]) -> List[str]:
+    """The longest heading path shared by every trail."""
+    out: List[str] = []
+    for level in zip(*trails):
+        if len(set(level)) != 1:
+            break
+        out.append(level[0])
+    return out
+
+
+def _merge_small(pieces: List[Dict[str, Any]], min_chars: int) -> List[Dict[str, Any]]:
+    """Merge every piece shorter than min_chars into a neighbour — a sibling (same
+    parent) when one is adjacent, else the smaller adjacent piece. A merged piece is
+    filed under the heading path its parts share, never under one of them."""
+    out = list(pieces)
+    i = 0
+    while len(out) > 1 and i < len(out):
+        if len(out[i]["body"]) >= min_chars:
+            i += 1
+            continue
+        near = [k for k in (i - 1, i + 1) if 0 <= k < len(out)]
+        parent = out[i]["trails"][0][:-1]
+        siblings = [k for k in near if any(t[:-1] == parent for t in out[k]["trails"])]
+        j = min(siblings or near, key=lambda k: len(out[k]["body"]))
+        a, b = sorted((i, j))
+        out[a] = {"body": f"{out[a]['body']}\n\n{out[b]['body']}",
+                  "trails": out[a]["trails"] + out[b]["trails"], "part": None}
+        del out[b]
+        i = a
+    return out
+
+
+def _cut(node: _Node, path: List[str], max_chars: int, min_chars: int,
+         overlap: int) -> List[Dict[str, Any]]:
+    """Pieces of one section: whole if it fits, else its own text and its children
+    (each cut the same way), the small ones merged with a sibling; a section with no
+    children that is still too long is divided by paragraph, marked (part i/n).
+    Each piece keeps its heading trail (path + title)."""
+    title = node.sec.title
+    here = path + [title] if node.sec.heading else path
+    # room left once the chunk starts with its heading path and "(part i/n)"
+    room = max_chars - len(" › ".join(here)) - 20
+    if len(node.whole()) <= room:
+        return [{"body": node.whole(), "trails": [here], "part": None}]
+    if not node.children:
+        bodies = [b for b, _ in _pieces(node.sec.body, room - len(node.sec.heading) - 20,
+                                        overlap)]
+        n = len(bodies)
+        return [{"body": f"{node.sec.heading} (part {i}/{n})\n\n{b}".strip(),
+                 "trails": [here], "part": (i, n)}
+                for i, b in enumerate(bodies, 1)]
+    pieces: List[Dict[str, Any]] = []
+    if node.sec.body:                  # a heading with no text is already in the path
+        intro = _Node(Section(clause=node.sec.clause, title=title, heading=node.sec.heading,
+                              body=node.sec.body, level=node.sec.level))
+        pieces += _cut(intro, path, max_chars, min_chars, overlap)
+    for child in node.children:
+        pieces += _cut(child, here, max_chars, min_chars, overlap)
+    return _merge_small(pieces, min_chars)
+
+
+def chunk_markdown_tree(
+    text: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    *,
+    max_chars: int = SECTION_MAX_CHARS,
+    min_chars: int = TREE_MIN_CHARS,
+    overlap: int = SECTION_OVERLAP,
+) -> List[Dict[str, Any]]:
+    """Cut any markdown document along its own heading tree, whatever level its units
+    sit at (OpenAPI 3.0.1 puts an object at "####", 3.2.0 at "###"):
+
+      - a section that fits in max_chars (with everything under it) is one chunk;
+      - one that does not is cut at its child headings, each child cut the same way;
+      - a piece shorter than min_chars joins a neighbour under the same parent, never
+        standing alone;
+      - a section with no children still too long is divided by paragraph,
+        "(part i/n)";
+      - every chunk starts with its heading path ("... › Parameter Object › Fixed
+        Fields (part 2/4)") and carries title / path / part / parts.
+
+    Headings inside fenced code blocks ("# a PNG image as a binary file:") are not
+    headings. Segments are ready for index_segments(..., chunk_size=None)."""
+    base = dict(metadata or {})
+    pieces: List[Dict[str, Any]] = []
+    for root in _tree(split_sections(text, skip_code_fences=True)):
+        pieces += _cut(root, [], max_chars, min_chars, overlap)
+    pieces = _merge_small(pieces, min_chars)
+    segments: List[Dict[str, Any]] = []
+    for p in pieces:
+        trails = [t for k, t in enumerate(p["trails"]) if t not in p["trails"][:k]]
+        # a parent's own text merged with its child is filed under the child
+        trails = [t for t in trails
+                  if not any(len(u) > len(t) and u[:len(t)] == t for u in trails)]
+        common = _common(trails) if len(trails) > 1 else trails[0][:-1]
+        title = " + ".join(" › ".join(t[len(common):]) or t[-1] for t in trails)
+        path = " › ".join([*common, title])
+        part, parts = p["part"] or (1, 1)
+        suffix = f" (part {part}/{parts})" if parts > 1 else ""
+        segments.append({**base, "text": f"{path}{suffix}\n\n{p['body']}",
+                         "title": title, "path": path, "part": part, "parts": parts,
+                         "chunking": TREE_CHUNKING})
     return segments

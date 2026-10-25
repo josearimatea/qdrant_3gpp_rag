@@ -375,3 +375,94 @@ def test_schema_refs_strips_markdown_escapes():
     from qdrant_3gpp_rag.spec_sections import schema_refs
 
     assert schema_refs("\\$ref: \\'\\#/components/schemas/Uri\\'") == {"Uri"}
+
+
+# --- chunk_markdown_tree: generic markdown documents --------------------------------
+
+def _doc(obj: str, sub: str) -> str:
+    """An OpenAPI-like document whose objects sit at `obj` level, subsections at `sub`."""
+    big = "\n\n".join(f"Paragraph {i} " + "word " * 40 for i in range(30))
+    return f"""# OpenAPI Specification
+
+{obj} Parameter Object
+
+Describes a single operation parameter.
+
+{sub} Parameter Locations
+
+Four possible parameter locations: path, query, header and cookie. """ + "x " * 200 + f"""
+
+{sub} Fixed Fields
+
+{big}
+
+{sub} Tiny
+
+Eight ch
+
+{obj} Server Object
+
+An object representing a Server. """ + "y " * 200 + """
+
+```yaml
+# a comment that is not a heading
+url: https://example.com
+```
+"""
+
+
+@pytest.mark.parametrize("obj, sub", [("####", "#####"), ("###", "####")])
+def test_markdown_tree_follows_the_documents_own_levels(obj, sub):
+    from qdrant_3gpp_rag import chunk_markdown_tree
+
+    segs = chunk_markdown_tree(_doc(obj, sub), max_chars=1500, min_chars=300)
+    assert all(len(s["text"]) >= 300 for s in segs)                    # nothing tiny alone
+    assert all(s["text"].startswith(s["path"]) for s in segs)          # path first
+    fixed = [s for s in segs if s["title"] == "Fixed Fields"]
+    assert len(fixed) > 1
+    assert all(f"(part {s['part']}/{s['parts']})" in s["text"].splitlines()[0] for s in fixed)
+    assert all(s["path"].endswith("Parameter Object › Fixed Fields") for s in fixed)
+    locations = [s for s in segs if "Parameter Locations" in s["title"]]
+    assert locations[0]["path"] == "OpenAPI Specification › Parameter Object › Parameter Locations"
+    assert "Describes a single operation parameter" in locations[0]["text"]   # intro joined
+    server = [s for s in segs if "Server Object" in s["path"]]
+    assert len(server) == 1 and "# a comment that is not a heading" in server[0]["text"]
+    assert not any("a comment that is not a heading" in s["title"] for s in segs)
+    assert not any(s["title"] == "Tiny" for s in segs)                 # merged into a sibling
+    tiny = [s for s in segs if "Tiny" in s["title"]][0]
+    assert tiny["path"].startswith("OpenAPI Specification › Parameter Object › ")
+
+
+def test_a_small_section_between_split_siblings_is_filed_under_their_common_parent():
+    from qdrant_3gpp_rag import chunk_markdown_tree
+
+    big = "\n\n".join("p " + "w " * 300 for _ in range(6))
+    doc = f"# Spec\n\n## A\n\n{big}\n\n## B\n\nshort\n\n## C\n\n{big}\n"
+    segs = chunk_markdown_tree(doc, max_chars=1500, min_chars=300)
+    b = [s for s in segs if "B" in s["title"].split(" + ")]
+    assert len(b) == 1 and b[0]["path"].startswith("Spec › ")       # not "A › B"
+    assert "A › B" not in b[0]["path"] and "C › B" not in b[0]["path"]
+
+
+def test_markdown_tree_keeps_a_section_whole_when_it_fits():
+    from qdrant_3gpp_rag import chunk_markdown_tree
+
+    segs = chunk_markdown_tree(_doc("###", "####"), max_chars=20000)
+    assert len(segs) == 1 and segs[0]["parts"] == 1
+    assert segs[0]["chunking"] == "markdown-tree-v1"
+
+
+@pytest.mark.parametrize("version", ["3.0.1", "3.2.0"])
+def test_the_openapi_references_cut_by_their_tree(version):
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "openapi_rulesbank", "data",
+                        "references", "openapi_reference", f"openapi_spec_{version}.md")
+    if not os.path.exists(path):
+        pytest.skip("OpenAPI reference not present")
+    from qdrant_3gpp_rag import chunk_markdown_tree
+
+    with open(path, encoding="utf-8") as f:
+        segs = chunk_markdown_tree(f.read())
+    assert all(len(s["text"]) >= 300 for s in segs)
+    assert all(s["text"].startswith(s["path"]) for s in segs)
+    param = [s for s in segs if "Parameter Object" in s["path"]]
+    assert param and any("path" in s["text"] and "query" in s["text"] for s in param)
