@@ -286,6 +286,9 @@ def test_the_common_types_of_ts_28623_are_reachable_by_defines():
     hdr = [s for s in segs if "NotificationHeader" in s["defines"]]
     assert hdr and all(s["annex"] for s in hdr)
     assert "systemDN" in hdr[0]["text"] and "eventTime" in hdr[0]["text"]
+    names = {d for s in segs for d in s["defines"]}
+    assert {"Dn", "Filter", "Uri", "Float"} <= names        # confirmed by its own $refs
+    assert not {"Location", "ETag"} & names                 # header keys, not types
 
 
 @pytest.mark.skipif(not os.path.exists(DATASET), reason="TSpec-LLM dataset not present")
@@ -336,3 +339,39 @@ def test_chunk_spec_sections_is_exported_by_the_package():
 
     assert "chunk_spec_sections" in qdrant_3gpp_rag.__all__
     assert qdrant_3gpp_rag.chunk_spec_sections is chunk_spec_sections
+
+
+REF_SPEC = """\
+# C.1 TS28623_ComDefs.yaml
+
+""" + "\n\n".join(f"{name}:\n\ntype: string\n\ndescription: " + "word " * 120 for name in
+                    ("Uri", "Location", "SystemDN")) + """
+
+NotificationHeader:
+
+properties:
+
+href:
+
+\\$ref: \\'\\#/components/schemas/Uri\\'
+"""
+
+
+def test_a_yaml_name_is_a_type_when_the_spec_refers_to_it_as_one():
+    by_def = {d: s for s in chunk_spec_sections(REF_SPEC, max_chars=1000) for d in s["defines"]}
+    assert "Uri" in by_def                 # not code-shaped, but '#/components/schemas/Uri'
+    assert "Location" not in by_def        # never referenced as a type (a header key)
+    assert "SystemDN" in by_def and "NotificationHeader" in by_def
+
+
+def test_type_names_referenced_from_another_file_of_the_same_spec_count():
+    segs = chunk_spec_sections(REF_SPEC.replace("components/schemas/Uri", "nothing"),
+                               max_chars=1000, schema_names={"Location"})
+    names = {d for s in segs for d in s["defines"]}
+    assert "Location" in names and "Uri" not in names
+
+
+def test_schema_refs_strips_markdown_escapes():
+    from qdrant_3gpp_rag.spec_sections import schema_refs
+
+    assert schema_refs("\\$ref: \\'\\#/components/schemas/Uri\\'") == {"Uri"}

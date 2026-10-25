@@ -19,7 +19,10 @@ lost the title that said what it was about. Here the unit is the clause:
   - only a section longer than `max_chars` is divided — first one YAML type
     definition per part (annex OpenAPI documents), then by paragraph — and every
     part repeats the section's heading and parents, marked "(part i/n)"; a part
-    holding one YAML type defines it ("NotificationHeader:" -> NotificationHeader);
+    holding one YAML type defines it ("NotificationHeader:" -> NotificationHeader)
+    when the name looks like code, or when the spec's own YAML refers to it as a
+    type ("#/components/schemas/Uri" makes "Uri:" a definition — the markdown lost
+    the YAML indentation, so a bare "Location:" header key looks the same);
   - everything is indexed, annexes included, every chunk marked annex=True/False: a
     3GPP spec's annexes hold its finished OpenAPI / YANG / ASN.1 documents, which
     other specs' documents reference (TS 28.532's YAML takes NotificationHeader from
@@ -71,6 +74,7 @@ _CLAUSE = re.compile(
     r"^(?:Annex\s+)?(?P<clause>\d+[a-z]?(?:\.\d+[a-z]?)*|[A-Z](?:\.\d+[a-z]?)+|[A-Z]\b)")
 _ANNEX = re.compile(r"^Annex\s+[A-Z]\b", re.IGNORECASE)
 _YAML_TYPE_DEF = re.compile(r"^[A-Z][A-Za-z0-9]+:\s*$", re.MULTILINE)
+_SCHEMA_REF = re.compile(r"components/schemas/([A-Za-z0-9_.-]+)")
 # A defining title: clause, kind, optional colon, then the name. Two styles are seen:
 # "Type NotifyThresholdCrossing", 'Resource \"/notificationSink\"' (TS 28.xxx) and
 # "Type: ReplaceHttpUrl", "Resource: Individual Subscription (Document)" (TS 29.xxx).
@@ -218,7 +222,14 @@ def _prefix(sec: Section) -> str:
     return (" › ".join(near) + "\n\n") if near else ""
 
 
-def _pieces(body: str, room: int, overlap: int) -> List[tuple]:
+def schema_refs(text: str) -> Set[str]:
+    """The type names a spec's YAML refers to: "#/components/schemas/<name>" (markdown
+    escapes such as "\\#" removed)."""
+    return set(_SCHEMA_REF.findall(text.replace("\\", "")))
+
+
+def _pieces(body: str, room: int, overlap: int,
+            schema_names: Optional[Set[str]] = None) -> List[tuple]:
     """A long body divided: one YAML type definition per piece when it holds several,
     then by paragraph; never larger than `room`. Each piece comes with the YAML type
     it holds (every piece of a type split further keeps its name), or None."""
@@ -229,10 +240,12 @@ def _pieces(body: str, room: int, overlap: int) -> List[tuple]:
                                               separators=["\n\n", "\n", " ", ""])
     out: List[tuple] = []
     for unit in units:
-        head = _YAML_TYPE_DEF.match(unit) if len(starts) >= 2 else None
+        # search, not match: the first unit also holds the document's preamble
+        # ("openapi: 3.0.1 ... components: schemas:") before its type
+        head = _YAML_TYPE_DEF.search(unit) if len(starts) >= 2 else None
         name = head.group(0).rstrip().rstrip(":") if head else None
-        if name and not _CODE_SHAPE.search(name):
-            name = None                 # "Example:", "Uri:" — not distinctive enough
+        if name and not _CODE_SHAPE.search(name) and name not in (schema_names or ()):
+            name = None                 # "Example:", "Location:" — not shown to be a type
         for piece in ([unit] if len(unit) <= room else splitter.split_text(unit)):
             if piece.strip():
                 out.append((piece, name))
@@ -246,13 +259,16 @@ def chunk_spec_sections(
     max_chars: int = SECTION_MAX_CHARS,
     overlap: int = SECTION_OVERLAP,
     include_annexes: bool = True,
+    schema_names: Optional[Set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Segments ready for index_segments(..., chunk_size=None): one per section (or
     per part of a long one), text under "text", plus the given metadata and
     clause / clause_ancestors / title / path / defines / mentions / annex / part /
     parts / chunking. The cover page and the contents listing are left out; the
-    annexes too when include_annexes=False."""
+    annexes too when include_annexes=False. schema_names: type names known from the
+    rest of the spec (its other files); this text's own references are always used."""
     base = dict(metadata or {})
+    known = schema_refs(text) | set(schema_names or ())
     kept: List[tuple] = []        # (section, [(text, body, names defined by the part)])
     for sec in split_sections(text):
         if not sec.body or sec.title.lower() == "contents":
@@ -266,7 +282,7 @@ def chunk_spec_sections(
             parts = [(whole, sec.body, own)]
         else:
             room = max_chars - len(prefix) - len(sec.heading) - 20
-            bodies = _pieces(sec.body, room, overlap)
+            bodies = _pieces(sec.body, room, overlap, known)
             n = len(bodies)
             parts = [(f"{prefix}{sec.heading} (part {i}/{n})\n\n{b}".strip() if sec.heading
                       else b, b, [name] if name else own)

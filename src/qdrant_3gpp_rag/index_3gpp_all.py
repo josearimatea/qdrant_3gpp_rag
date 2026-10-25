@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional
 
 from qdrant_3gpp_rag.factory import DEFAULT_DEVICE, QdrantFactory
 from qdrant_3gpp_rag.indexer import index_segments
-from qdrant_3gpp_rag.spec_sections import CHUNKING, chunk_spec_sections
+from qdrant_3gpp_rag.spec_sections import CHUNKING, chunk_spec_sections, schema_refs
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +116,21 @@ def build_3gpp_segments(specs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     every chunk where it comes from: release / series / spec (the file stem, as
     consumers filter on it) / spec_number and version (one spec split over several
     files shares its spec_number) / file (path under the corpus root)."""
+    # The YAML type names each spec refers to, over all its files: one file may hold
+    # the definitions and another the references (TS 28.541 is split in four).
+    refs: Dict[str, set] = {}
+    for doc in specs:
+        key = spec_identity(doc["spec"])["spec_number"] or doc["spec"]
+        refs.setdefault(key, set()).update(schema_refs(doc["processed_text"]))
     segments: List[Dict[str, Any]] = []
     for doc in specs:
+        ident = spec_identity(doc["spec"])
         base = {"release": doc["release"], "series": doc["series"], "spec": doc["spec"],
-                **spec_identity(doc["spec"]), "file": doc.get("file", "")}
+                **ident, "file": doc.get("file", "")}
         segments.extend(chunk_spec_sections(doc["processed_text"], base,
                                             max_chars=GPP_CHUNK_SIZE,
-                                            overlap=GPP_CHUNK_OVERLAP))
+                                            overlap=GPP_CHUNK_OVERLAP,
+                                            schema_names=refs[ident["spec_number"] or doc["spec"]]))
     logger.info("Built %d section chunk(s) from %d spec(s).", len(segments), len(specs))
     return segments
 
