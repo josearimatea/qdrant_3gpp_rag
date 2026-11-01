@@ -580,3 +580,6 @@ a regra às outras specs.
   28532-i00"): o arquivo tem alterações pendentes do usuário e não foi tocado.
 
 **Testes:** 115 → 145.
+
+**Correção da entrada acima:** o comentário "Version: 28532-i00" de `judge_settings.py` já
+sai nas alterações pendentes do usuário no `openapi_analysis`; não há nada a corrigir lá.
