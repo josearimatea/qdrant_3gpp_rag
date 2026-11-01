@@ -29,6 +29,10 @@ Omit --release/--series to index everything under --docs-dir.
 Incremental (only what changed; each chunk's point id comes from its content):
     python scripts/index_3gpp_all.py ... --no-recreate --prune --dry-run   # report
     python scripts/index_3gpp_all.py ... --no-recreate --prune             # apply
+
+One spec only, in any version, leaving the rest of the collection as it is:
+    python scripts/index_3gpp_all.py ... --replace-spec 28532 --dry-run    # report
+    python scripts/index_3gpp_all.py ... --replace-spec 28532              # apply
 """
 
 import argparse
@@ -79,6 +83,9 @@ def main() -> None:
                         help="With --no-recreate, also delete the points no longer produced.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Only report what would be added / kept / deleted.")
+    parser.add_argument("--replace-spec", default=None,
+                        help="Spec number: replace only that spec's points with what --docs-dir "
+                             "holds of it (e.g. 28532); the rest of the collection stays.")
     args = parser.parse_args()
 
     try:
@@ -97,6 +104,7 @@ def main() -> None:
             recreate=not args.no_recreate,
             prune=args.prune,
             dry_run=args.dry_run,
+            replace_spec=args.replace_spec,
         )
         verb = "Would write" if args.dry_run else "Wrote"
         print(f"{verb} {n} chunk(s) into collection '{args.collection}'.")

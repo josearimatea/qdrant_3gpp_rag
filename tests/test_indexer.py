@@ -245,3 +245,28 @@ class TestDropCollection:
         factory.client.collection_exists.return_value = False
         assert drop_collection(factory, "c") is False
         factory.client.delete_collection.assert_not_called()
+
+
+def test_a_scope_limits_what_is_compared_and_pruned():
+    from unittest.mock import MagicMock
+
+    from qdrant_3gpp_rag.indexer import _content_hash, _existing_ids, _point_id, index_segments
+
+    factory = MagicMock()
+    client = factory.client
+    client.collection_exists.return_value = True
+    client.get_collection.return_value.config.optimizer_config.indexing_threshold = 10000
+    client.count.return_value.count = 1
+    keep = {"spec_number": "28532", "chunk_index": 0}
+    kept_id = _point_id(_content_hash("same", keep))
+    client.scroll.return_value = ([MagicMock(id=kept_id), MagicMock(id="old-of-this-spec")], None)
+
+    index_segments([{"text": "same", "spec_number": "28532"}], factory=factory,
+                   collection_name="c", chunk_size=None, recreate=False, prune=True,
+                   scope={"spec_number": "28532"})
+
+    used = client.scroll.call_args.kwargs["scroll_filter"].must[0]
+    assert used.key == "metadata.spec_number" and used.match.value == "28532"
+    assert client.delete.call_args.kwargs["points_selector"].points == ["old-of-this-spec"]
+    assert _existing_ids(client, "c") == {kept_id, "old-of-this-spec"}
+    assert client.scroll.call_args.kwargs["scroll_filter"] is None

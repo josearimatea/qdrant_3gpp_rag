@@ -163,6 +163,24 @@ def _load_segments_cache(path: str) -> List[Dict[str, Any]]:
     return segments
 
 
+def _replace_spec(directory: str, collection_name: str, spec_number: str, factory: QdrantFactory,
+                  cache_path: str, releases: Optional[List[str]], series: Optional[List[str]],
+                  specs: Optional[List[str]], dry_run: bool) -> int:
+    """One spec's points replaced by what `directory` holds of it; see index_3gpp_all."""
+    loaded = [doc for doc in load_3gpp_specs(directory, releases=releases, series=series, specs=specs)
+              if spec_identity(doc["spec"])["spec_number"] == spec_number]
+    if not loaded:
+        raise ValueError(f"Spec '{spec_number}' not found under '{directory}'.")
+    segments = build_3gpp_segments(loaded)
+    written = index_segments(segments, factory=factory, collection_name=collection_name,
+                             chunk_size=None, recreate=False, prune=True, dry_run=dry_run,
+                             scope={"spec_number": spec_number})
+    if not dry_run and os.path.exists(cache_path):
+        _save_segments_cache(cache_path, [s for s in _load_segments_cache(cache_path)
+                                          if s.get("spec_number") != spec_number] + segments)
+    return written
+
+
 def index_3gpp_all(
     directory: str,
     collection_name: str,
@@ -179,6 +197,7 @@ def index_3gpp_all(
     recreate: bool = True,
     prune: bool = False,
     dry_run: bool = False,
+    replace_spec: Optional[str] = None,
 ) -> int:
     """Load, chunk, and index all 3GPP specs under a directory into Qdrant.
 
@@ -201,6 +220,9 @@ def index_3gpp_all(
             recreate=False only the chunks not yet in the collection are embedded.
         prune: with recreate=False, also delete the points no longer produced.
         dry_run: only log what would be added / kept / deleted.
+        replace_spec: a spec number ("28532"): make the collection hold that spec as
+            found under `directory`, in any version, and touch nothing else. Implies
+            recreate=False and prune; the chunk cache keeps matching the collection.
 
     Returns:
         Number of chunks written (or that would be, with dry_run).
@@ -212,6 +234,10 @@ def index_3gpp_all(
     )
 
     cache_path = _chunk_cache_path(collection_name, output_dir)
+    if replace_spec:
+        return _replace_spec(directory, collection_name, replace_spec, factory, cache_path,
+                             releases, series, specs, dry_run)
+
     segments: List[Dict[str, Any]] = []
     if os.path.exists(cache_path) and not force_chunk_rebuild:
         segments = _load_segments_cache(cache_path)

@@ -9,7 +9,9 @@ lost the title that said what it was about. Here the unit is the clause:
 
   - a chunk is one section — its heading, its text and its tables, never two
     sections; headings of every level are split points (ATX "#" .. "#########" and
-    setext "===" / "---"), as 3GPP clauses run nine levels deep;
+    setext "===" / "---"), as 3GPP clauses run nine levels deep. A title the source
+    left unstyled ("12.1.3.2.2 Notification x" as plain text) counts too, when its
+    number continues the clause numbering at that point;
   - the contents listing ("Contents", in every 3GPP spec) is left out: a list of
     titles and page numbers that would match every query;
   - a heading with no text of its own ("12.3.1.2.3 Resources") is not a chunk: it
@@ -17,8 +19,9 @@ lost the title that said what it was about. Here the unit is the clause:
     ("12.3.1.2.3.2.1 Resource "/notificationSink" › 12.3.1.2.3.2.1.3 HTTP methods"),
     so a "POST" clause says which resource it is the method of;
   - only a section longer than `max_chars` is divided — first one YAML type
-    definition per part (annex OpenAPI documents), then by paragraph — and every
-    part repeats the section's heading and parents, marked "(part i/n)"; a part
+    definition per part (annex OpenAPI documents), then by paragraph, a table never
+    cut unless over TABLE_MAX_CHARS and then only between rows, with its header
+    repeated — and every part repeats the section's heading and parents, marked "(part i/n)"; a part
     holding one YAML type defines it ("NotificationHeader:" -> NotificationHeader)
     when the name looks like code, or when the spec's own YAML refers to it as a
     type ("#/components/schemas/Uri" makes "Uri:" a definition — the markdown lost
@@ -61,6 +64,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # ~8% of TS 28.532's sections (a type definition table is ~2.5k).
 SECTION_MAX_CHARS = 4000
 SECTION_OVERLAP = 200
+# A table up to this size stays whole in one chunk, even over the chunk's bound; a
+# larger one (change histories, RF test lists: up to 5.4M characters in Rel-18) would
+# overflow a consumer's prompt, so it is cut between rows, repeating its header.
+TABLE_MAX_CHARS = 16000
 # How many parent titles a chunk starts with.
 PARENTS_IN_TEXT = 2
 CHUNKING = "sections-v3"           # recorded on every chunk: how it was cut
@@ -89,6 +96,17 @@ _TRAILING_PARENS = re.compile(r"\s*\([^)]*\)\s*$")
 # word after a kind ("Resource allocation", "Operation Points", "Notification PUSH")
 # is prose, not a name; only the colon and quoted styles may name one in words.
 _CODE_SHAPE = re.compile(r"[a-z][A-Z]|[/_\-\d]")
+# A plain line that reads as a numbered title: "12.1.3.2.2 Notification x" (two
+# components at least, so a "1 Item" list line never qualifies), alone in its paragraph
+# and with no closing punctuation: a sentence wrapped so that a line starts with a
+# number ("... in\n7.7 Spurious Response are applicable.") is not one.
+_UNSTYLED_TITLE = re.compile(
+    r"(?<=\n\n)(\d+[a-z]?(?:\.\d+[a-z]?)+)[ \t]+[A-Z\"\\][^\n]{1,99}[^\n.,;:](?=\n\n|\Z)")
+_CLAUSE_PART = re.compile(r"(\d+)([a-z]?)$")
+_GRID_RULE = re.compile(r"^\+[-=+:]+\+[ \t]*$")
+_PIPE_RULE = re.compile(r"^\|[ \t:|-]*-[ \t:|-]*\|[ \t]*$")
+_DASH_RULE = re.compile(r"^[ \t]*-{3,}(?:[ \t]+-{2,})*[ \t]*$")
+_CAPTION = re.compile(r"^\**Table\b")
 
 
 @dataclass
@@ -197,18 +215,54 @@ def _headings(text: str, skip_code_fences: bool = False) -> List[tuple]:
     return out
 
 
+def _continues_numbering(prev: str, clause: str) -> bool:
+    """Whether `clause` can come right after `prev`: its first child ("12.1" -> "12.1.1"
+    or "12.1.0"), or the next sibling of it or of an ancestor ("12.1.3" -> "12.1.4",
+    "12.1.3a", "12.2")."""
+    a, b = prev.split("."), clause.split(".")
+    if len(b) == len(a) + 1 and b[:-1] == a:
+        return b[-1] in ("0", "1")
+    if len(b) <= len(a) and b[:-1] == a[:len(b) - 1]:
+        x, y = _CLAUSE_PART.match(a[len(b) - 1]), _CLAUSE_PART.match(b[-1])
+        if x and y:
+            return int(y[1]) == int(x[1]) + 1 or (y[1] == x[1] and y[2] > x[2])
+    return False
+
+
+def _with_unstyled_titles(text: str, heads: List[tuple]) -> List[tuple]:
+    """The headings plus every plain line that reads as a numbered title and continues
+    the numbering from the title before it. That second test leaves out contents
+    listings and numbered lists, whose numbers do not follow the clause in progress."""
+    found = sorted([(h[0], 0, h) for h in heads]
+                   + [(m.start(), 1, m) for m in _UNSTYLED_TITLE.finditer(text)])
+    out: List[tuple] = []
+    prev, level, last_end = "", 1, -1
+    for start, kind, item in found:
+        if kind == 0:
+            out.append(item)
+            prev, level, last_end = clause_of(item[3]) or prev, item[2], item[1]
+        elif start >= last_end and prev and _continues_numbering(prev, item.group(1)):
+            out.append((start, item.end(), level, item.group(0).strip()))
+            prev, last_end = item.group(1), item.end()
+    return out
+
+
 def _is_parent(parent: Section, child_clause: str, child_level: int) -> bool:
     if parent.clause and child_clause:
         return child_clause.startswith(parent.clause + ".")
     return parent.level < child_level
 
 
-def split_sections(text: str, skip_code_fences: bool = False) -> List[Section]:
+def split_sections(text: str, skip_code_fences: bool = False,
+                   unstyled_titles: bool = False) -> List[Section]:
     """Every section of a spec, in order, each knowing its parents and whether it is
     in an annex. The text before the first heading is a section titled
     '(front matter)'. skip_code_fences: see _headings (off for the 3GPP corpus,
-    whose index was built without it)."""
+    whose index was built without it). unstyled_titles: see _with_unstyled_titles
+    (on for 3GPP specs only, whose clause numbering it relies on)."""
     heads = _headings(text, skip_code_fences)
+    if unstyled_titles:
+        heads = _with_unstyled_titles(text, heads)
     sections: List[Section] = []
     if heads and text[:heads[0][0]].strip():
         sections.append(Section(clause="", title="(front matter)", heading="",
@@ -244,11 +298,127 @@ def schema_refs(text: str) -> Set[str]:
     return set(_SCHEMA_REF.findall(text.replace("\\", "")))
 
 
+def _table_end(lines: List[str], i: int) -> Optional[int]:
+    """Index past the last line of the table starting at lines[i], None if none does.
+    The three markdown forms: grid ("+---+"), pipe ("| a |" over "|---|") and dashes
+    (rules around rows that blank lines separate; it closes at a rule before a blank)."""
+    n = len(lines)
+    if _GRID_RULE.match(lines[i]):
+        j = i + 1
+        while j < n and lines[j][:1] in ("+", "|"):
+            j += 1
+        return j if j > i + 1 else None
+    if lines[i].startswith("|") and i + 1 < n and _PIPE_RULE.match(lines[i + 1]):
+        j = i + 2
+        while j < n and lines[j].startswith("|"):
+            j += 1
+        return j
+    if (_DASH_RULE.match(lines[i]) and (i == 0 or not lines[i - 1].strip())
+            and i + 1 < n and lines[i + 1].strip()):
+        for j in range(i + 1, n):
+            if _DASH_RULE.match(lines[j]) and (j + 1 == n or not lines[j + 1].strip()):
+                return j + 1
+    return None
+
+
+def _blocks(body: str) -> List[tuple]:
+    """A body as (text, is_table) blocks in order, each table with its caption."""
+    lines = body.split("\n")
+    out: List[tuple] = []
+    text: List[str] = []
+    i = 0
+    while i < len(lines):
+        end = _table_end(lines, i)
+        if end is None:
+            text.append(lines[i])
+            i += 1
+            continue
+        stop = len(text)
+        while stop > 0 and not text[stop - 1].strip():
+            stop -= 1
+        start = stop
+        while start > 0 and text[start - 1].strip():      # the paragraph right before it
+            start -= 1
+        caption = text[start:stop] + [""] if start < stop and _CAPTION.match(text[start]) else []
+        text = text[:start] if caption else text
+        if "\n".join(text).strip():
+            out.append(("\n".join(text).strip(), False))
+        out.append(("\n".join(caption + lines[i:end]), True))
+        text = []
+        i = end
+    if "\n".join(text).strip():
+        out.append(("\n".join(text).strip(), False))
+    return out
+
+
+def _table_rows(table: str) -> tuple:
+    """A table as (header, rows, footer, row separator); the header holds its caption
+    and column titles (a grid table with no "===" line: its first row)."""
+    lines = table.split("\n")
+    first = next(i for i, line in enumerate(lines) if _table_end(lines, i) is not None)
+    if _GRID_RULE.match(lines[first]):
+        rules = [i for i in range(first, len(lines)) if _GRID_RULE.match(lines[i])]
+        head = next((i for i in rules if "=" in lines[i]), rules[1] if len(rules) > 2 else first)
+        rows, start = [], head + 1
+        for end in (i for i in rules if i > head):
+            rows.append("\n".join(lines[start:end + 1]))
+            start = end + 1
+        if start < len(lines):                            # an unclosed last row
+            rows.append("\n".join(lines[start:]))
+        return "\n".join(lines[:head + 1]), rows, "", "\n"
+    if lines[first].startswith("|"):
+        return "\n".join(lines[:first + 2]), lines[first + 2:], "", "\n"
+    blank = next((i for i in range(first, len(lines)) if not lines[i].strip()), len(lines))
+    head = next((i for i in range(first + 1, blank) if _DASH_RULE.match(lines[i])), first)
+    if head == len(lines) - 1:                            # header rule closes it: no rows
+        return "\n".join(lines[:first + 1]), ["\n".join(lines[first + 1:-1])], lines[-1], "\n"
+    rows = re.split(r"\n[ \t]*\n", "\n".join(lines[head + 1:-1]).strip("\n"))
+    return "\n".join(lines[:head + 1]), rows, lines[-1], "\n\n"
+
+
+def _split_table(table: str, room: int, splitter: RecursiveCharacterTextSplitter) -> List[str]:
+    """A table too long to keep whole, cut between rows: every part repeats the header
+    and holds whole rows. A row alone over TABLE_MAX_CHARS (a code listing in one cell)
+    is the only thing cut inside, by line."""
+    header, rows, footer, sep = _table_rows(table)
+    parts: List[str] = []
+    if len(header) > room // 2:                           # too big to repeat: its own part
+        parts.append(header)
+        header = ""
+    wrap = lambda group: "\n".join(p for p in (header, sep.join(group), footer) if p)  # noqa: E731
+    group: List[str] = []
+    for row in rows:
+        if group and len(wrap([*group, row])) > room:
+            parts.append(wrap(group))
+            group = []
+        group.append(row)
+    if group:
+        parts.append(wrap(group))
+    return [piece for part in parts
+            for piece in ([part] if len(part) <= TABLE_MAX_CHARS else splitter.split_text(part))]
+
+
+def _cut_keeping_tables(unit: str, room: int, splitter: RecursiveCharacterTextSplitter) -> List[str]:
+    """A long text divided by paragraph, its tables whole up to TABLE_MAX_CHARS even
+    over `room`; neighbours that fit `room` together share a piece."""
+    out: List[str] = []
+    for block, is_table in _blocks(unit):
+        if len(block) <= room or (is_table and len(block) <= TABLE_MAX_CHARS):
+            cut = [block]
+        else:
+            cut = _split_table(block, room, splitter) if is_table else splitter.split_text(block)
+        if out and cut and len(out[-1]) + 2 + len(cut[0]) <= room:
+            out[-1] += "\n\n" + cut.pop(0)
+        out.extend(cut)
+    return out
+
+
 def _pieces(body: str, room: int, overlap: int,
-            schema_names: Optional[Set[str]] = None) -> List[tuple]:
+            schema_names: Optional[Set[str]] = None, keep_tables: bool = False) -> List[tuple]:
     """A long body divided: one YAML type definition per piece when it holds several,
-    then by paragraph; never larger than `room`. Each piece comes with the YAML type
-    it holds (every piece of a type split further keeps its name), or None."""
+    then by paragraph; never larger than `room` (keep_tables: see _cut_keeping_tables).
+    Each piece comes with the YAML type it holds (every piece of a type split further
+    keeps its name), or None."""
     starts = [m.start() for m in _YAML_TYPE_DEF.finditer(body)]
     units = ([body[a:b].strip() for a, b in zip([0] + starts[1:], starts[1:] + [len(body)])]
              if len(starts) >= 2 else [body])
@@ -262,7 +432,9 @@ def _pieces(body: str, room: int, overlap: int,
         name = head.group(0).rstrip().rstrip(":") if head else None
         if name and not _CODE_SHAPE.search(name) and name not in (schema_names or ()):
             name = None                 # "Example:", "Location:" — not shown to be a type
-        for piece in ([unit] if len(unit) <= room else splitter.split_text(unit)):
+        cut = (_cut_keeping_tables(unit, room, splitter) if keep_tables
+               else splitter.split_text(unit))
+        for piece in ([unit] if len(unit) <= room else cut):
             if piece.strip():
                 out.append((piece, name))
     return out
@@ -286,7 +458,7 @@ def chunk_spec_sections(
     base = dict(metadata or {})
     known = schema_refs(text) | set(schema_names or ())
     kept: List[tuple] = []        # (section, [(text, body, names defined by the part)])
-    for sec in split_sections(text):
+    for sec in split_sections(text, unstyled_titles=True):
         if not sec.body or sec.title.lower() == "contents":
             continue                    # a parent heading only, or the contents listing
         if sec.title == "(front matter)" or (sec.annex and not include_annexes):
@@ -298,9 +470,10 @@ def chunk_spec_sections(
             parts = [(whole, sec.body, own)]
         else:
             room = max_chars - len(prefix) - len(sec.heading) - 20
-            bodies = _pieces(sec.body, room, overlap, known)
+            bodies = _pieces(sec.body, room, overlap, known, keep_tables=True)
             n = len(bodies)
-            parts = [(f"{prefix}{sec.heading} (part {i}/{n})\n\n{b}".strip() if sec.heading
+            mark = (lambda i: f" (part {i}/{n})") if n > 1 else (lambda i: "")  # one big table
+            parts = [(f"{prefix}{sec.heading}{mark(i)}\n\n{b}".strip() if sec.heading
                       else b, b, [name] if name else own)
                      for i, (b, name) in enumerate(bodies, 1)]
         kept.append((sec, parts))

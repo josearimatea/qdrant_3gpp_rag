@@ -1,6 +1,7 @@
 """Chunking a 3GPP spec by section (spec_sections) — one chunk per clause."""
 
 import os
+import re
 
 import pytest
 
@@ -466,3 +467,167 @@ def test_the_openapi_references_cut_by_their_tree(version):
     assert all(s["text"].startswith(s["path"]) for s in segs)
     param = [s for s in segs if "Parameter Object" in s["path"]]
     assert param and any("path" in s["text"] and "query" in s["text"] for s in param)
+
+
+UNSTYLED = """\
+Contents
+========
+12.1.1 Listed title 10
+12.1.2 Another listed title 11
+
+### 12.1.1 Styled title
+
+Text of the styled clause.
+
+12.1.2 Type NotifyMoiEvent
+
+Text of the unstyled clause.
+
+12.1.2.1 First child
+
+Text of its child.
+
+7.3 Figures shown below
+
+Numbered like a title, but no continuation of 12.1.2.1.
+
+12.2 Next at an upper level
+
+Text of the upper level.
+"""
+
+
+def test_an_unstyled_title_that_continues_the_numbering_is_a_section():
+    by_clause = {s.clause: s for s in split_sections(UNSTYLED, unstyled_titles=True)}
+    assert by_clause["12.1.2"].title == "12.1.2 Type NotifyMoiEvent"
+    assert by_clause["12.1.2.1"].parents[-1] == "12.1.2 Type NotifyMoiEvent"
+    assert by_clause["12.2"].title == "12.2 Next at an upper level"
+    assert "7.3" not in by_clause                                  # no continuation
+    assert "7.3 Figures shown below" in by_clause["12.1.2.1"].body  # stays as text
+    assert by_clause["12.1.1"].body == "Text of the styled clause."
+
+
+def test_a_contents_listing_is_not_read_as_titles():
+    titles = [s.title for s in split_sections(UNSTYLED, unstyled_titles=True)]
+    assert titles.count("12.1.2 Another listed title 11") == 0
+    assert "12.1.1 Listed title 10" not in titles
+
+
+def test_unstyled_titles_are_off_by_default_and_on_for_chunking():
+    assert "12.1.2" not in {s.clause for s in split_sections(UNSTYLED)}
+    segs = chunk_spec_sections(UNSTYLED, {})
+    own = next(s for s in segs if s["clause"] == "12.1.2")
+    assert own["defines"] == ["NotifyMoiEvent"]
+
+
+@pytest.mark.parametrize("prev, clause, expected", [
+    ("12.1", "12.1.1", True),         # first child
+    ("11.1", "11.1.0", True),
+    ("12.1", "12.1.2", False),        # skips the first child
+    ("12.1.3", "12.1.4", True),       # next sibling
+    ("12.1.3", "12.1.3a", True),      # lettered sibling
+    ("12.1.3a", "12.1.3b", True),
+    ("12.1.3", "12.1.5", False),      # a gap
+    ("12.1.3.2", "12.2", True),       # sibling of an ancestor
+    ("12.1.3", "13.1", False),
+    ("12.1.3", "12.1.3", False),      # the same number again
+])
+def test_continues_numbering(prev, clause, expected):
+    from qdrant_3gpp_rag.spec_sections import _continues_numbering
+
+    assert _continues_numbering(prev, clause) is expected
+
+
+@pytest.mark.parametrize("line", [
+    "Applies as in\n7.7 Spurious Response are applicable.",   # the end of a wrapped sentence
+    "7.7 The UE shall consider this reception\nnot successful",  # the start of one
+    "7.7 Spurious Response are applicable.",                  # closing punctuation
+])
+def test_a_wrapped_sentence_starting_with_a_number_is_not_a_title(line):
+    text = f"### 7.6 Styled title\n\nSome text.\n\n{line}\n\nMore text.\n"
+    assert "7.7" not in {s.clause for s in split_sections(text, unstyled_titles=True)}
+
+
+def _grid(rows: int, cell: str = "value") -> str:
+    border = "+------+----------------------------------------+"
+    lines = [border, "| Name | Comment                                |",
+             "+======+========================================+"]
+    for i in range(rows):
+        lines += [f"| r{i:<4}| {cell:<39}|", f"|      | {'second line of the row':<39}|", border]
+    return "\n".join(lines)
+
+
+def _dash(rows: int) -> str:
+    rule = "  " + "-" * 40
+    seg = "  ------ " + "-" * 33
+    body = "\n\n".join(f"  r{i:<5} value of the row\n         second line of the row" for i in range(rows))
+    return f"{rule}\n  Name   Comment\n{seg}\n{body}\n{rule}"
+
+
+def _pipe(rows: int) -> str:
+    return "\n".join(["| Name | Comment |", "|---|---|"]
+                     + [f"| r{i} | value of the row, padded to some width |" for i in range(rows)])
+
+
+def _spec_with(table: str) -> str:
+    return ("### 5.1 Parameters\n\n" + ("A paragraph before the table. " * 30) + "\n\n"
+            "**Table 5.1-1: Parameters**\n\n" + table + "\n\n" + ("A paragraph after it. " * 30) + "\n")
+
+
+@pytest.mark.parametrize("make, rows", [(_grid, 70), (_dash, 90), (_pipe, 150)])
+def test_a_table_up_to_the_ceiling_stays_whole_in_one_chunk(make, rows):
+    table = make(rows)
+    assert 4000 < len(table) < 16000
+    segs = chunk_spec_sections(_spec_with(table), {})
+    holders = [s for s in segs if table in s["text"]]
+    assert len(holders) == 1
+    assert "**Table 5.1-1: Parameters**" in holders[0]["text"]     # with its caption
+    assert any("A paragraph after it" in s["text"] for s in segs)
+
+
+@pytest.mark.parametrize("make, rows", [(_grid, 400), (_dash, 400), (_pipe, 500)])
+def test_a_table_over_the_ceiling_is_cut_between_rows_and_repeats_its_header(make, rows):
+    table = make(rows)
+    assert len(table) > 16000
+    segs = [s for s in chunk_spec_sections(_spec_with(table), {}) if "| Name" in s["text"]
+            or "Name   Comment" in s["text"]]
+    assert len(segs) > 1
+    assert all(len(s["text"]) <= 4000 for s in segs)
+    text = "\n".join(s["text"] for s in segs)
+    for i in range(rows):                                          # every row, once and whole
+        assert len(re.findall(rf"\br{i}\b", text)) == 1
+    if make is not _pipe:
+        assert text.count("second line of the row") == rows
+        for s in segs:                                             # no row left open
+            assert s["text"].count("second line of the row") == len(
+                re.findall(r"\br\d+\b", s["text"]))
+
+
+def test_a_grid_row_over_the_ceiling_is_the_only_thing_cut_inside():
+    long_row = "\n".join(f"| line {i:<60} |" for i in range(600))
+    border = "+" + "-" * 68 + "+"
+    table = f"{border}\n{long_row}\n{border}"
+    segs = chunk_spec_sections(_spec_with(table), {})
+    text = "\n".join(s["text"] for s in segs)
+    assert all(f"line {i} " in text for i in range(600))
+    assert max(len(s["text"]) for s in segs) <= 16400
+
+
+def test_prose_between_two_rules_is_not_read_as_a_table():
+    from qdrant_3gpp_rag.spec_sections import _blocks
+
+    lone = "Before.\n\n  ------\n\nProse between.\n\n  ------\n\nAfter."
+    assert [is_table for _, is_table in _blocks(lone)] == [False]
+
+
+def test_a_section_that_is_one_big_table_has_no_part_marker():
+    segs = chunk_spec_sections("### 5.1 Parameters\n\n" + _grid(70) + "\n", {})
+    assert len(segs) == 1 and segs[0]["parts"] == 1
+    assert "(part" not in segs[0]["text"]
+
+
+def test_the_tree_cut_of_generic_markdown_is_not_table_aware():
+    from qdrant_3gpp_rag.spec_sections import _pieces
+
+    pieces = _pieces(_grid(70), 4000, 200)
+    assert len(pieces) > 1                                         # as before

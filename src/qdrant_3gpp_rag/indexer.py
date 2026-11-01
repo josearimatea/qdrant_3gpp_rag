@@ -24,6 +24,9 @@ from typing import Any, Dict, List, Optional, Set
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from qdrant_client.http.models import (
     Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
     Modifier,
     OptimizersConfigDiff,
     PayloadSchemaType,
@@ -219,12 +222,17 @@ def _content_hash(text: str, metadata: Dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _existing_ids(client: Any, collection_name: str) -> Set[str]:
-    """Every point id in a collection (ids only, no payload or vectors)."""
+def _existing_ids(client: Any, collection_name: str,
+                  scope: Optional[Dict[str, Any]] = None) -> Set[str]:
+    """Every point id in a collection, or among the points matching `scope` (ids only,
+    no payload or vectors)."""
     ids: Set[str] = set()
     offset = None
+    scroll_filter = (Filter(must=[FieldCondition(key=f"metadata.{k}", match=MatchValue(value=v))
+                                  for k, v in scope.items()]) if scope else None)
     while True:
         points, offset = client.scroll(collection_name, limit=10000, offset=offset,
+                                       scroll_filter=scroll_filter,
                                        with_payload=False, with_vectors=False)
         ids.update(str(p.id) for p in points)
         if offset is None:
@@ -244,6 +252,7 @@ def index_segments(
     hybrid: bool = True,
     prune: bool = False,
     dry_run: bool = False,
+    scope: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Chunk and index a list of segments, each carrying its own metadata.
 
@@ -275,6 +284,9 @@ def index_segments(
         prune: with recreate=False, delete the points the segments no longer produce
             (use it when `segments` is the collection's whole content).
         dry_run: log what would change and return, writing nothing.
+        scope: with recreate=False, compare and prune only against the points whose
+            metadata matches it (e.g. {"spec_number": "28532"}): `segments` are that
+            part's whole content, and the rest of the collection is not touched.
 
     Returns:
         Number of chunks written (or, with dry_run, that would be written).
@@ -304,7 +316,7 @@ def index_segments(
 
     client = factory.client
     exists = client.collection_exists(collection_name)
-    existing = _existing_ids(client, collection_name) if exists and not recreate else set()
+    existing = _existing_ids(client, collection_name, scope) if exists and not recreate else set()
     to_add = [pid for pid in chunks if pid not in existing]
     stale = sorted(existing - set(chunks)) if prune else []
     logger.info(
