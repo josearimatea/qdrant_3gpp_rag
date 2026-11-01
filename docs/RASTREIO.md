@@ -527,3 +527,56 @@ de 4.000 (4.032 na 3.0.1, 4.245 na 3.2.0): a introdução curta de um objeto jun
 Reindexada **só** a `openapi_reference` (73 pedaços, 2 s).
 
 **Testes:** 109 → 115.
+
+## 01/11/2026 — TS 28.532 trocada pela i20; títulos sem estilo e tabelas inteiras (commit `b886257`)
+
+**Pedido:** as coleções tinham a TS 28.532 na i00, enquanto os consumidores usam a i20;
+alguns títulos da spec não eram reconhecidos; tabelas grandes eram cortadas no meio.
+
+**Títulos sem estilo.** Linha numerada, sozinha no parágrafo, sem pontuação final e que
+continua a numeração da cláusula anterior passa a ser título. A primeira versão não exigia
+o parágrafo próprio e promovia frases quebradas (`7.7 Spurious Response are applicable.`,
+que sozinha mudava o caminho de cerca de 860 pedaços): 636 promoções caíram para 568, em 123
+dos 920 arquivos. Título real com ponto final ou quebrado em duas linhas fica de fora.
+
+**Tabelas.** Tabela de até 16.000 caracteres fica inteira em um pedaço, mesmo acima do
+limite de 4.000; maior que isso é cortada entre linhas, repetindo o cabeçalho. Só uma linha
+acima do teto (código em uma célula) é cortada por dentro. Vale para `chunk_spec_sections`;
+o recorte da `openapi_reference` não muda. Corpus Rel-18: cerca de 59 mil tabelas, 21.130
+acima de 4.000 e a maior com 5,4 milhões de caracteres, por isso o teto.
+
+**Troca só de uma spec.** `--replace-spec 28532` compara e apaga apenas os pontos daquele
+`spec_number` e mantém o cache igual à coleção. A i20 veio de
+`openapi_generator/data/inputs/3gpp/28532-i20.md`, por uma pasta temporária; o Dataset não
+foi alterado.
+
+| Coleção | antes | depois | gravados | apagados |
+|---|---|---|---|---|
+| `3gpp_rel18_28_28532` | 701 | 373 | 373 | 701 |
+| `3gpp_rel18_28` | 7.639 | 7.311 | 373 | 701 |
+| `3gpp_rel18_all` | 294.073 | 293.745 | 373 | 701 |
+
+**i20 medida:** 373 pedaços; 249 tabelas, 248 inteiras por comparação exata e só o histórico
+de mudanças (81.991) dividido; 7 títulos promovidos, conferidos contra os estilos do Word; o
+maior pedaço tem 14.003 caracteres e 22 passam de 4.000.
+
+**Corpus (só leitura, sem gravar):** nenhuma palavra perdida. A checagem de tabela inteira
+nessa passada foi frouxa para tabelas de traços; repetir a comparação exata antes de aplicar
+a regra às outras specs.
+
+**Atenção:**
+- Na i20, as cláusulas 11.2 e 12.2 (fault supervision) são "Void" no Word original; esse
+  conteúdo saiu da 28.532 nas três coleções.
+- O rótulo continua `sections-v3`, pois entra no hash e mudá-lo recalcularia tudo. A partir
+  desta data ele cobre dois recortes: só a 28.532 usa as regras novas. As outras 122 specs
+  com títulos promovidos e as tabelas cortadas do resto do corpus ficam para a próxima
+  reindexação (só a regra de títulos dava 2.263 pedaços na `all`; as tabelas, estimados 90 mil).
+- Reindexar a partir do Dataset traz a i00 de volta, porque ele continua com a i00.
+- Cache da `all` tem 294.016 linhas contra 293.745 pontos: a diferença já existia, pedaços
+  idênticos viram um ponto só.
+- Em tabela grande, a busca densa só lê o começo (cerca de 2.000 caracteres); o resto depende
+  do BM25. Efeito nas buscas ainda não medido.
+- Falta corrigir o comentário de `openapi_analysis/.../judge_settings.py` ("Version:
+  28532-i00"): o arquivo tem alterações pendentes do usuário e não foi tocado.
+
+**Testes:** 115 → 145.
