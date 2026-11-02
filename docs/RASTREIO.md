@@ -617,3 +617,24 @@ Medições anteriores à correção não são comparáveis diretamente.
 **Correção da entrada acima:** `openapi_generator/rag/spec_index.py:141` usa store só denso e
 não sofre o problema. Das chamadas diretas listadas, ficam sem correção só as duas à
 `openapi_reference`, que é híbrida. Commit da correção: `3c7403b`.
+
+## 01/11/2026 — `openapi_reference` também pelo `retrieve`; híbrida contra densa
+
+As duas chamadas diretas que ficaram sem a correção de empates agora usam o `retrieve`:
+`openapi_generator` (`3bdf863`) e `openapi_rulesbank` (`e306ded`). Pela função real de cada
+repositório, 8 consultas repetidas 6 vezes deram listas idênticas nos dois. Testes
+unitários: rulesbank 7 de 7; o generator não tem testes em `tests/unit`, então lá só vale
+essa repetição. Suítes completas dos dois não rodadas.
+
+**Híbrida contra densa** (170 consultas com cláusula certa conhecida, k=5; acertos em 1º
+lugar / entre os 5 primeiros):
+
+| Coleção | densa | híbrida antiga (uma rodada) | híbrida nova |
+|---|---|---|---|
+| `3gpp_rel18_28_28532` | 94 / 124 | 100 / 146 | 103 / 150 |
+| `3gpp_rel18_all` | 76 / 109 | 87 / 124 | 85 / 126 |
+
+150 das consultas usam nomes, títulos ou frases da própria spec, o que favorece o BM25. Nas
+outras 20, escritas com outras palavras, a densa não perde: 13/15 contra 12/16 na
+`3gpp_rel18_28_28532`, 6/11 contra 5/10 na `3gpp_rel18_all`. Amostra pequena. Quem decide é
+a rodada do `openapi_analysis`.
