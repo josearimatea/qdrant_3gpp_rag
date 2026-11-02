@@ -613,3 +613,7 @@ Medições anteriores à correção não são comparáveis diretamente.
 `openapi_generator/tools/rag_tools.py:49` e `openapi_rulesbank/tools/rag_tools.py:744`.
 
 **Testes:** 145 → 152.
+
+**Correção da entrada acima:** `openapi_generator/rag/spec_index.py:141` usa store só denso e
+não sofre o problema. Das chamadas diretas listadas, ficam sem correção só as duas à
+`openapi_reference`, que é híbrida. Commit da correção: `3c7403b`.
