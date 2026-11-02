@@ -75,3 +75,17 @@ def test_without_exclude_the_results_are_unchanged(factory):
         QUERY, k=10)
     assert [d.metadata["content_hash"] for d in via_retrieve] == \
            [d.metadata["content_hash"] for d in direct]
+
+
+@pytest.mark.parametrize("filters, exclude", [
+    (None, None),
+    ({"spec_number": "28532"}, None),
+    (None, EXCLUDE),
+])
+def test_a_repeated_hybrid_search_returns_the_same_list(factory, filters, exclude):
+    from qdrant_3gpp_rag import retrieve
+
+    runs = [[d.metadata["content_hash"] for d in
+             retrieve(QUERY, factory=factory, collection_name=COLLECTION, k=5,
+                      filters=filters, exclude=exclude).docs] for _ in range(6)]
+    assert runs[0] and all(run == runs[0] for run in runs)

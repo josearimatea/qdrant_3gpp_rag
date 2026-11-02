@@ -583,3 +583,33 @@ a regra às outras specs.
 
 **Correção da entrada acima:** o comentário "Version: 28532-i00" de `judge_settings.py` já
 sai nas alterações pendentes do usuário no `openapi_analysis`; não há nada a corrigir lá.
+
+## 01/11/2026 — busca híbrida reprodutível
+
+**Pedido (vindo do `openapi_analysis`):** a mesma consulta devolvia listas diferentes, o que
+quebra caches que dependem da evidência e faz os vereditos oscilarem. É o problema dos
+empates do RRF já registrado aqui e deixado sem correção até agora.
+
+**Correção:** no modo híbrido, o `retrieve` pede `k × 4`, ordena por (-score, id do ponto) e
+corta em `k`. O modo só denso continua com a mesma chamada.
+
+**Medido na função real** (39 consultas, 6 repetições, k=5):
+
+| Caso | mesma ordem | mesmos 5 |
+|---|---|---|
+| `3gpp_rel18_all` | 39/39 | 39/39 |
+| `all` com filtro por spec | 39/39 | 39/39 |
+| `all` com `exclude` | 39/39 | 39/39 |
+| `3gpp_rel18_28_28532` | 39/39 | 39/39 |
+
+**Os resultados mudam um pouco.** O `langchain_qdrant` usa o mesmo limite nas listas densa e
+BM25 antes da fusão, então pedir 20 também faz as listas irem até a 20ª posição, e as
+pontuações mudam. Contra a chamada antiga com k=5 (que já oscilava), os resultados têm em
+média 4,4 a 4,6 trechos em comum dos 5, e o 1º lugar coincide em 31 a 34 das 39 consultas.
+Medições anteriores à correção não são comparáveis diretamente.
+
+**Ainda sem a correção:** chamadas diretas a `similarity_search`, que não passam pelo
+`retrieve`: `openapi_generator/rag/spec_index.py:141`,
+`openapi_generator/tools/rag_tools.py:49` e `openapi_rulesbank/tools/rag_tools.py:744`.
+
+**Testes:** 145 → 152.

@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Type
 
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseLanguageModel
+from langchain_qdrant import RetrievalMode
 from pydantic import BaseModel, Field, create_model
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
@@ -33,6 +34,9 @@ from qdrant_3gpp_rag.self_query import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A hybrid search asks for this many times k, to order the results itself: see _search.
+HYBRID_CANDIDATES_PER_RESULT = 4
 
 
 def _build_filter_model(
@@ -140,6 +144,23 @@ def format_document(doc: Document) -> str:
     return header + doc.page_content.strip()
 
 
+def _search(vector_store: Any, query: str, k: int, qdrant_filter: Optional[Filter]) -> List[Document]:
+    """The k best documents, the same ones in the same order on every call.
+
+    RRF scores a chunk only by its positions in the dense and BM25 lists, so exact ties
+    are common (1st and 3rd ties with 3rd and 1st), and Qdrant orders tied points
+    differently from call to call. A hybrid search thus fetches more than k, orders by
+    (score, point id) and only then cuts, so a tie at the cut cannot change the result.
+    A dense search returns a stable order as it is.
+    """
+    if getattr(vector_store, "retrieval_mode", None) != RetrievalMode.HYBRID:
+        return vector_store.similarity_search(query=query, k=k, filter=qdrant_filter)
+    scored = vector_store.similarity_search_with_score(
+        query=query, k=k * HYBRID_CANDIDATES_PER_RESULT, filter=qdrant_filter)
+    scored.sort(key=lambda pair: (-pair[1], str(pair[0].metadata["_id"])))
+    return [doc for doc, _ in scored[:k]]
+
+
 def retrieve(
     query: str,
     *,
@@ -215,7 +236,7 @@ def retrieve(
     if qdrant_filter is not None and qdrant_filter.must_not:
         filter_desc = (f"{'' if filter_desc == 'No filter applied' else filter_desc + ' | '}"
                        f"Excluded: {exclude}")
-    docs = vector_store.similarity_search(query=search_query, k=k, filter=qdrant_filter)
+    docs = _search(vector_store, search_query, k, qdrant_filter)
 
     result = RetrievalResult(
         docs=docs,

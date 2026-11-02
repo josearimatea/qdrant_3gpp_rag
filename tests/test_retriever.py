@@ -250,3 +250,54 @@ class TestGetRelevantDocuments:
         assert isinstance(strings[0], str)
         assert "doc1" in strings[0]
         assert "doc2" in strings[1]
+
+
+class TestHybridSearchIsReproducible:
+
+    @staticmethod
+    def _store(pairs):
+        from langchain_qdrant import RetrievalMode
+
+        vs = MagicMock()
+        vs.retrieval_mode = RetrievalMode.HYBRID
+        vs.similarity_search_with_score.side_effect = lambda **kw: list(pairs)
+        factory = MagicMock()
+        factory.get_vector_store.return_value = vs
+        return factory, vs
+
+    @staticmethod
+    def _pair(pid, score):
+        return Document(page_content=pid, metadata={"_id": pid}), score
+
+    def test_ties_are_ordered_by_point_id_whatever_order_qdrant_returns(self):
+        pairs = [("b", 0.5), ("c", 0.3), ("a", 0.5), ("d", 0.6)]
+        orders = [pairs, list(reversed(pairs))]
+        got = []
+        for order in orders:
+            factory, _ = self._store([self._pair(*p) for p in order])
+            docs = retrieve("q", factory=factory, collection_name="c", k=4).docs
+            got.append([d.metadata["_id"] for d in docs])
+        assert got == [["d", "a", "b", "c"]] * 2
+
+    def test_a_tie_at_the_cut_keeps_the_same_document(self):
+        factory, _ = self._store([self._pair("z", 0.5), self._pair("a", 0.5), self._pair("y", 0.9)])
+        docs = retrieve("q", factory=factory, collection_name="c", k=2).docs
+        assert [d.metadata["_id"] for d in docs] == ["y", "a"]
+
+    def test_it_fetches_more_than_k_and_keeps_the_filter(self):
+        factory, vs = self._store([self._pair("a", 0.5)])
+        retrieve("q", factory=factory, collection_name="c", k=5, filters={"spec": "x"})
+        kwargs = vs.similarity_search_with_score.call_args.kwargs
+        assert kwargs["k"] == 20 and kwargs["filter"].must[0].key == "metadata.spec"
+        vs.similarity_search.assert_not_called()
+
+    def test_a_dense_search_is_left_as_it_is(self):
+        from langchain_qdrant import RetrievalMode
+
+        factory, vs = MagicMock(), MagicMock()
+        vs.retrieval_mode = RetrievalMode.DENSE
+        vs.similarity_search.return_value = [Document(page_content="a", metadata={})]
+        factory.get_vector_store.return_value = vs
+        assert len(retrieve("q", factory=factory, collection_name="c", k=5).docs) == 1
+        assert vs.similarity_search.call_args.kwargs["k"] == 5
+        vs.similarity_search_with_score.assert_not_called()
